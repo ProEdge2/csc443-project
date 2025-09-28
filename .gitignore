@@ -35,12 +35,6 @@ data/
 *.sst
 *.db
 
-# IDE files
-.vscode/
-*.swp
-*.swo
-*~
-
 # OS generated files
 .DS_Store
 .DS_Store?
