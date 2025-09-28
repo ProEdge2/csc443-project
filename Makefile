@@ -1,0 +1,47 @@
+CXX = g++
+CXXFLAGS = -std=c++17 -Wall -Wextra -O2 -I./src
+SRCDIR = src
+TESTDIR = tests
+
+MAIN_TARGET = db_main
+TEST_MEMTABLE_TARGET = test_memtable
+TEST_DATABASE_TARGET = test_database
+
+MAIN_SOURCES = main.cpp
+TEST_MEMTABLE_SOURCES = $(TESTDIR)/test_memtable.cpp $(TESTDIR)/test_framework.cpp
+TEST_DATABASE_SOURCES = $(TESTDIR)/test_database.cpp $(TESTDIR)/test_framework.cpp
+
+HEADERS = $(SRCDIR)/memtable/memtable.h $(SRCDIR)/core/database.h $(SRCDIR)/storage/sst.h
+IMPL_FILES = $(SRCDIR)/memtable/memtable.cpp $(SRCDIR)/core/database.cpp $(SRCDIR)/storage/sst.cpp
+TEST_HEADERS = $(TESTDIR)/test_framework.h
+
+all: $(MAIN_TARGET) $(TEST_MEMTABLE_TARGET) $(TEST_DATABASE_TARGET)
+
+$(MAIN_TARGET): $(MAIN_SOURCES) $(HEADERS) $(IMPL_FILES)
+	$(CXX) $(CXXFLAGS) -o $(MAIN_TARGET) $(MAIN_SOURCES)
+
+$(TEST_MEMTABLE_TARGET): $(TEST_MEMTABLE_SOURCES) $(TEST_HEADERS) $(HEADERS) $(IMPL_FILES)
+	$(CXX) $(CXXFLAGS) -o $(TEST_MEMTABLE_TARGET) $(TEST_MEMTABLE_SOURCES)
+
+$(TEST_DATABASE_TARGET): $(TEST_DATABASE_SOURCES) $(TEST_HEADERS) $(HEADERS) $(IMPL_FILES)
+	$(CXX) $(CXXFLAGS) -o $(TEST_DATABASE_TARGET) $(TEST_DATABASE_SOURCES)
+
+test: $(TEST_MEMTABLE_TARGET) $(TEST_DATABASE_TARGET)
+	./$(TEST_MEMTABLE_TARGET)
+	./$(TEST_DATABASE_TARGET)
+
+run: $(MAIN_TARGET)
+	./$(MAIN_TARGET)
+
+clean:
+	rm -f $(MAIN_TARGET) $(TEST_MEMTABLE_TARGET) $(TEST_DATABASE_TARGET)
+
+rebuild: clean all
+
+.PHONY: all test run clean rebuild
+
+debug: CXXFLAGS += -g -DDEBUG
+debug: $(MAIN_TARGET) $(TEST_MEMTABLE_TARGET) $(TEST_DATABASE_TARGET)
+
+release: CXXFLAGS += -DNDEBUG
+release: $(MAIN_TARGET) $(TEST_MEMTABLE_TARGET) $(TEST_DATABASE_TARGET)
