@@ -270,7 +270,59 @@ int RedBlackTree<K, V>::get_height_helper(RedBlackNode<K, V>* node) const {
     return 1 + std::max(left_height, right_height);
 }
 
-// TODO: scan method for range queries
-// ...
+template<typename K, typename V>
+std::vector<std::pair<K, V>> RedBlackTree<K, V>::scan(const K& start_key, const K& end_key) const {
+    std::vector<std::pair<K, V>> results;
+    scan_helper(root, start_key, end_key, results);
+    return results;
+}
+
+template<typename K, typename V>
+void RedBlackTree<K, V>::scan_helper(RedBlackNode<K, V>* node, const K& start_key, const K& end_key, std::vector<std::pair<K, V>>& results) const {
+    if (node == nil_node) {
+        return;
+    }
+
+    // If current node's key is greater than start_key, search left subtree
+    if (start_key < node->key) {
+        scan_helper(node->left, start_key, end_key, results);
+    }
+
+    // If current node's key is within the range, add it to results
+    if (node->key >= start_key && node->key <= end_key) {
+        results.push_back(std::make_pair(node->key, node->value));
+    }
+
+    // If current node's key is less than end_key, search right subtree
+    if (end_key > node->key) {
+        scan_helper(node->right, start_key, end_key, results);
+    }
+}
+
+template<typename K, typename V>
+K RedBlackTree<K, V>::get_min_key() const {
+    if (root == nil_node) {
+        return K{}; // Return default value for empty tree
+    }
+
+    RedBlackNode<K, V>* current = root;
+    while (current->left != nil_node) {
+        current = current->left;
+    }
+    return current->key;
+}
+
+template<typename K, typename V>
+K RedBlackTree<K, V>::get_max_key() const {
+    if (root == nil_node) {
+        return K{}; // Return default value for empty tree
+    }
+
+    RedBlackNode<K, V>* current = root;
+    while (current->right != nil_node) {
+        current = current->right;
+    }
+    return current->key;
+}
 
 #endif

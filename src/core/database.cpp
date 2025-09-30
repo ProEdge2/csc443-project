@@ -56,7 +56,7 @@ bool Database<K, V>::close() {
         }
 
         current_memtable.reset();
-        sst_files.clear();
+        // Don't clear sst_files - keep them in memory for persistence
         is_open = false;
 
         std::cout << "Database '" << db_name << "' closed successfully." << std::endl;
@@ -73,28 +73,61 @@ bool Database<K, V>::put(const K& key, const V& value) {
         return false;
     }
 
-    // TODO: ...
+    // Try to insert into memtable
+    if (current_memtable->put(key, value)) {
+        return true;
+    }
+
+    // If memtable is full, flush it to SST and try again
+    if (current_memtable->is_full()) {
+        flush_memtable_to_sst();
+        return current_memtable->put(key, value);
+    }
+
+    return false;
 }
 
 template<typename K, typename V>
 bool Database<K, V>::get(const K& key, V& value) {
-    if (!is_open) {
+    if (!is_open || !current_memtable) {
         return false;
     }
 
-    // TODO: ...
+    // Search only in memtable
+    return current_memtable->get(key, value);
+
+    // TODO: Search SST files when key not found in memtable
 }
 
 template<typename K, typename V>
-std::vector<std::pair<K, V>> Database<K, V>::scan(const K& start_key, const K& end_key) {
-    std::vector<std::pair<K, V>> results;
+std::pair<K, V>* Database<K, V>::scan(const K& start_key, const K& end_key, size_t& result_size) {
+    result_size = 0;
 
     if (!is_open) {
-        return results;
+        return nullptr;
     }
 
+    std::vector<std::pair<K, V>> results;
 
-    // TODO: ...
+    // Scan only the current memtable
+    if (current_memtable) {
+        results = current_memtable->scan(start_key, end_key);
+    }
+
+    // TODO: Scan SST files
+
+    // Allocate memory for results
+    result_size = results.size();
+    if (result_size == 0) {
+        return nullptr;
+    }
+
+    std::pair<K, V>* result_array = new std::pair<K, V>[result_size];
+    for (size_t i = 0; i < result_size; i++) {
+        result_array[i] = results[i];
+    }
+
+    return result_array;
 }
 
 template<typename K, typename V>
@@ -103,7 +136,34 @@ void Database<K, V>::flush_memtable_to_sst() {
         return;
     }
 
-    // TODO: ...
+    try {
+        // Generate SST filename
+        std::string sst_filename = generate_sst_filename();
+        std::string sst_path = db_directory + "/" + sst_filename;
+
+        // Get all data from memtable using scan with min/max bounds
+        std::vector<std::pair<K, V>> memtable_data;
+        if (current_memtable->size() > 0) {
+            K min_key = current_memtable->get_min_key();
+            K max_key = current_memtable->get_max_key();
+            memtable_data = current_memtable->scan(min_key, max_key);
+        }
+
+        // Create SST file from memtable data
+        auto sst = std::make_unique<SST<K, V>>(sst_path);
+        if (sst->create_from_memtable(sst_path, memtable_data)) {
+            sst_files.push_back(std::move(sst));
+            std::cout << "Successfully flushed memtable to SST: " << sst_filename << std::endl;
+        } else {
+            std::cerr << "Failed to create SST file: " << sst_filename << std::endl;
+        }
+
+        // Clear the memtable after successful flush
+        current_memtable->clear();
+
+    } catch (const std::exception& e) {
+        std::cerr << "Error flushing memtable to SST: " << e.what() << std::endl;
+    }
 }
 
 template<typename K, typename V>

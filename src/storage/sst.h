@@ -23,6 +23,7 @@ private:
     };
 
     bool binary_search_file(const K& target_key, V& value) const;
+    size_t binary_search_start_position(std::ifstream& file, const K& start_key) const;
 
 public:
     SST(const std::string& file_path);

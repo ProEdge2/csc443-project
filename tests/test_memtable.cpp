@@ -246,6 +246,123 @@ void test_red_black_root_always_black() {
     ASSERT_EQUAL(BLACK, tree.get_root()->color);
 }
 
+void test_memtable_scan_basic() {
+    RedBlackTree<std::string, int> tree(10);
+
+    // Insert test data
+    tree.put("apple", 1);
+    tree.put("banana", 2);
+    tree.put("cherry", 3);
+    tree.put("date", 4);
+    tree.put("elderberry", 5);
+
+    // Test basic scan
+    auto results = tree.scan("banana", "date");
+    ASSERT_EQUAL(3, static_cast<int>(results.size()));
+
+    // Check results are in order
+    ASSERT_EQUAL(std::string("banana"), results[0].first);
+    ASSERT_EQUAL(2, results[0].second);
+    ASSERT_EQUAL(std::string("cherry"), results[1].first);
+    ASSERT_EQUAL(3, results[1].second);
+    ASSERT_EQUAL(std::string("date"), results[2].first);
+    ASSERT_EQUAL(4, results[2].second);
+}
+
+void test_memtable_scan_empty_range() {
+    RedBlackTree<std::string, int> tree(10);
+
+    tree.put("apple", 1);
+    tree.put("banana", 2);
+    tree.put("cherry", 3);
+
+    // Test scan with no matching keys
+    auto results = tree.scan("zebra", "zoo");
+    ASSERT_EQUAL(0, static_cast<int>(results.size()));
+}
+
+void test_memtable_scan_partial_range() {
+    RedBlackTree<std::string, int> tree(10);
+
+    tree.put("apple", 1);
+    tree.put("banana", 2);
+    tree.put("cherry", 3);
+    tree.put("date", 4);
+    tree.put("elderberry", 5);
+
+    // Test scan with partial range
+    auto results = tree.scan("banana", "cherry");
+    ASSERT_EQUAL(2, static_cast<int>(results.size()));
+
+    ASSERT_EQUAL(std::string("banana"), results[0].first);
+    ASSERT_EQUAL(2, results[0].second);
+    ASSERT_EQUAL(std::string("cherry"), results[1].first);
+    ASSERT_EQUAL(3, results[1].second);
+}
+
+void test_memtable_scan_full_range() {
+    RedBlackTree<std::string, int> tree(10);
+
+    tree.put("apple", 1);
+    tree.put("banana", 2);
+    tree.put("cherry", 3);
+
+    // Test scan with full range (all keys)
+    auto results = tree.scan("apple", "cherry");
+    ASSERT_EQUAL(3, static_cast<int>(results.size()));
+
+    ASSERT_EQUAL(std::string("apple"), results[0].first);
+    ASSERT_EQUAL(1, results[0].second);
+    ASSERT_EQUAL(std::string("banana"), results[1].first);
+    ASSERT_EQUAL(2, results[1].second);
+    ASSERT_EQUAL(std::string("cherry"), results[2].first);
+    ASSERT_EQUAL(3, results[2].second);
+}
+
+void test_memtable_scan_single_key() {
+    RedBlackTree<std::string, int> tree(10);
+
+    tree.put("apple", 1);
+    tree.put("banana", 2);
+    tree.put("cherry", 3);
+
+    // Test scan with single key
+    auto results = tree.scan("banana", "banana");
+    ASSERT_EQUAL(1, static_cast<int>(results.size()));
+
+    ASSERT_EQUAL(std::string("banana"), results[0].first);
+    ASSERT_EQUAL(2, results[0].second);
+}
+
+void test_memtable_scan_integer_keys() {
+    RedBlackTree<int, std::string> tree(10);
+
+    tree.put(1, "one");
+    tree.put(2, "two");
+    tree.put(3, "three");
+    tree.put(4, "four");
+    tree.put(5, "five");
+
+    // Test scan with integer keys
+    auto results = tree.scan(2, 4);
+    ASSERT_EQUAL(3, static_cast<int>(results.size()));
+
+    ASSERT_EQUAL(2, results[0].first);
+    ASSERT_EQUAL(std::string("two"), results[0].second);
+    ASSERT_EQUAL(3, results[1].first);
+    ASSERT_EQUAL(std::string("three"), results[1].second);
+    ASSERT_EQUAL(4, results[2].first);
+    ASSERT_EQUAL(std::string("four"), results[2].second);
+}
+
+void test_memtable_scan_empty_tree() {
+    RedBlackTree<std::string, int> tree(10);
+
+    // Test scan on empty tree
+    auto results = tree.scan("apple", "banana");
+    ASSERT_EQUAL(0, static_cast<int>(results.size()));
+}
+
 int main() {
     std::cout << "Running Red-Black Tree Memtable Tests" << std::endl;
 
@@ -267,11 +384,14 @@ int main() {
     RUN_TEST(test_red_black_balanced_height);
     RUN_TEST(test_red_black_root_always_black);
 
-    // TODO: tests for scan functionality once implemented
-    // RUN_TEST(test_memtable_scan_basic);
-    // RUN_TEST(test_memtable_scan_empty_range);
-    // RUN_TEST(test_memtable_scan_partial_range);
-    // RUN_TEST(test_memtable_scan_full_range);
+    // Scan functionality tests
+    RUN_TEST(test_memtable_scan_basic);
+    RUN_TEST(test_memtable_scan_empty_range);
+    RUN_TEST(test_memtable_scan_partial_range);
+    RUN_TEST(test_memtable_scan_full_range);
+    RUN_TEST(test_memtable_scan_single_key);
+    RUN_TEST(test_memtable_scan_integer_keys);
+    RUN_TEST(test_memtable_scan_empty_tree);
 
     TestFramework::print_results();
 

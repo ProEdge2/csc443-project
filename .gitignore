@@ -55,3 +55,7 @@ obj/
 # Temporary files
 *.tmp
 *.temp
+
+.idea/*
+test_database
+test_sst_flush

@@ -52,9 +52,12 @@ public:
     void inorder_traversal() const;
     void inorder_helper(RedBlackNode<K, V>* node) const;
 
-    // TODO: scan method for range queries
-    // std::vector<std::pair<K, V>> scan(const K& start_key, const K& end_key) const;
-    // void scan_helper(RedBlackNode<K, V>* node, const K& start_key, const K& end_key, std::vector<std::pair<K, V>>& results) const;
+    std::vector<std::pair<K, V>> scan(const K& start_key, const K& end_key) const;
+    void scan_helper(RedBlackNode<K, V>* node, const K& start_key, const K& end_key, std::vector<std::pair<K, V>>& results) const;
+
+    // Get min and max keys for scan bounds
+    K get_min_key() const;
+    K get_max_key() const;
 
     RedBlackNode<K, V>* get_root() const { return root; }
     RedBlackNode<K, V>* get_nil_node() const { return nil_node; }
