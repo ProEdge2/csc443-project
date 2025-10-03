@@ -17,45 +17,30 @@ SST<K, V>::~SST() {
 }
 
 template<typename K, typename V>
-bool SST<K, V>::create_from_memtable(const std::string& file_path,
-                                    const std::vector<std::pair<K, V>>& sorted_data) {
+bool SST<K, V>::create_from_memtable(const std::string& file_path, const std::vector<std::pair<K, V>>& sorted_data) {
     std::ofstream file(file_path, std::ios::binary);
     if (!file.is_open()) {
         return false;
     }
 
-    try {
-        // Update SST metadata
-        filename = file_path;
-        entry_count = sorted_data.size();
-
-        if (entry_count == 0) {
-            file.close();
-            return true; // Empty SST file created successfully
-        }
-
-        // Set min and max keys
-        min_key = sorted_data[0].first;
-        max_key = sorted_data[entry_count - 1].first;
-
-        // Write data to file in binary format
-        // For simplicity, we'll write each key-value pair sequentially
-        for (const auto& pair : sorted_data) {
-            // Write key
-            file.write(reinterpret_cast<const char*>(&pair.first), sizeof(K));
-            // Write value
-            file.write(reinterpret_cast<const char*>(&pair.second), sizeof(V));
-        }
-
-        file.close();
+    entry_count = sorted_data.size();
+    if (entry_count == 0) {
         return true;
-
-    } catch (const std::exception& e) {
-        std::cerr << "Error creating SST file: " << e.what() << std::endl;
-        file.close();
-        return false;
     }
+
+    min_key = sorted_data[0].first;
+    max_key = sorted_data[entry_count - 1].first;
+    filename = file_path;
+
+    for (const auto& pair : sorted_data) {
+        file.write(reinterpret_cast<const char*>(&pair.first), sizeof(K));
+        file.write(reinterpret_cast<const char*>(&pair.second), sizeof(V));
+    }
+
+    file.close();
+    return true;
 }
+
 
 template<typename K, typename V>
 bool SST<K, V>::get(const K& key, V& value) const {
@@ -63,7 +48,7 @@ bool SST<K, V>::get(const K& key, V& value) const {
         return false;
     }
 
-    // TODO:
+    return binary_search_file(key, value);
 }
 
 template<typename K, typename V>
@@ -113,7 +98,34 @@ std::vector<std::pair<K, V>> SST<K, V>::scan(const K& start_key, const K& end_ke
 
 template<typename K, typename V>
 bool SST<K, V>::binary_search_file(const K& target_key, V& value) const {
-    // TODO: ...
+    std::ifstream file(filename, std::ios::binary);
+    if (!file.is_open()) {
+        return false;
+    }
+
+    size_t left = 0;
+    size_t right = entry_count;
+
+    while (left < right) {
+        size_t mid = left + (right - left) / 2;
+
+        K key;
+        V val;
+
+        file.seekg(mid * (sizeof(K) + sizeof(V)));
+        file.read(reinterpret_cast<char*>(&key), sizeof(K));
+        file.read(reinterpret_cast<char*>(&val), sizeof(V));
+
+        if (key == target_key) {
+            value = val;
+            return true;
+        } else if (key < target_key) {
+            left = mid + 1;
+        } else {
+            right = mid;
+        }
+    }
+
     return false;
 }
 
@@ -145,8 +157,41 @@ size_t SST<K, V>::binary_search_start_position(std::ifstream& file, const K& sta
 template<typename K, typename V>
 bool SST<K, V>::load_existing_sst(const std::string& file_path,
                                  std::unique_ptr<SST<K, V>>& sst_ptr) {
-    // TODO: ...
-    return false;
+    std::ifstream file(file_path, std::ios::binary);
+    if (!file.is_open()) {
+        return false;
+    }
+
+    // Create a new SST object to populate entry_count, min_key, max_key
+    sst_ptr = std::make_unique<SST<K, V>>(file_path);
+
+    // Get file size
+    file.seekg(0, std::ios::end);
+    std::streampos file_size = file.tellg();
+    file.seekg(0, std::ios::beg);
+
+    // Each entry is K + V bytes
+    size_t entry_count = static_cast<size_t>(file_size) / (sizeof(K) + sizeof(V));
+    sst_ptr->entry_count = entry_count;
+
+    if (entry_count == 0) {
+        file.close();
+        return true; // Empty
+    }
+
+    // Read first key
+    K first_key;
+    file.read(reinterpret_cast<char*>(&first_key), sizeof(K));
+    sst_ptr->min_key = first_key;
+
+    // Read last key
+    file.seekg((entry_count - 1) * (sizeof(K) + sizeof(V)));
+    K last_key;
+    file.read(reinterpret_cast<char*>(&last_key), sizeof(K));
+    sst_ptr->max_key = last_key;
+
+    file.close();
+    return true;
 }
 
 template<typename K, typename V>

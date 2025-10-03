@@ -93,10 +93,21 @@ bool Database<K, V>::get(const K& key, V& value) {
         return false;
     }
 
-    // Search only in memtable
-    return current_memtable->get(key, value);
+    // Search in memtable first
+    if (current_memtable && current_memtable->get(key, value)) {
+        return true;
+    }
 
-    // TODO: Search SST files when key not found in memtable
+    // Search SST files in reverse order (ensures youngest before oldest)
+    for (auto it = sst_files.rbegin(); it != sst_files.rend(); ++it) {
+        const auto& sst_ptr = *it;
+        if (key < sst_ptr->get_min_key() || key > sst_ptr->get_max_key())
+            continue;
+        if (sst_ptr->get(key, value))
+            return true;
+    }
+
+    return false; // not found
 }
 
 template<typename K, typename V>
@@ -109,12 +120,32 @@ std::pair<K, V>* Database<K, V>::scan(const K& start_key, const K& end_key, size
 
     std::vector<std::pair<K, V>> results;
 
-    // Scan only the current memtable
+    // Scan memtable
     if (current_memtable) {
         results = current_memtable->scan(start_key, end_key);
     }
 
-    // TODO: Scan SST files
+    // Scan SST files in reverse order (ensures youngest before oldest)
+    for (auto it = sst_files.rbegin(); it != sst_files.rend(); ++it) {
+        const auto& sst = *it;
+        if (end_key < sst->get_min_key() || start_key > sst->get_max_key()) {
+            continue;
+        }
+        auto sst_results = sst->scan(start_key, end_key);
+        results.insert(results.end(), sst_results.begin(), sst_results.end());
+    }
+
+
+    // Sort results
+    std::sort(results.begin(), results.end(), [](const std::pair<K, V>& a, const std::pair<K, V>& b) {
+              return a.first < b.first;
+    });
+
+    // Remove duplicates (keep youngest result)
+    results.erase(std::unique(results.begin(), results.end(),
+                [](const std::pair<K, V>& a, const std::pair<K, V>& b) {
+                    return a.first == b.first;
+                }), results.end());
 
     // Allocate memory for results
     result_size = results.size();
@@ -126,7 +157,6 @@ std::pair<K, V>* Database<K, V>::scan(const K& start_key, const K& end_key, size
     for (size_t i = 0; i < result_size; i++) {
         result_array[i] = results[i];
     }
-
     return result_array;
 }
 
@@ -172,7 +202,54 @@ void Database<K, V>::load_existing_ssts() {
         return;
     }
 
-    // TODO: ...
+    sst_files.clear();
+
+    std::vector<std::pair<std::string, std::unique_ptr<SST<K, V>>>> sst_vector;
+
+    for (const auto& entry : std::filesystem::directory_iterator(db_directory)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+
+        std::string filename = entry.path().string();
+        if (filename.find(".sst") == std::string::npos) {
+            continue;
+        }
+
+        std::unique_ptr<SST<K, V>> sst;
+        if (SST<K, V>::load_existing_sst(filename, sst)) {
+            sst_vector.push_back({filename, std::move(sst)});
+        }
+    }
+
+    // Sort by timestamp in filename (youngest last)
+    std::sort(sst_vector.begin(), sst_vector.end(), [](const auto& a, const auto& b) {
+        // Get the file timestamp
+        auto extract_ts = [](const std::string& s) {
+            size_t pos1 = s.find("sst_");
+            if (pos1 == std::string::npos) {
+                return -1LL;
+            }
+            pos1 += 4;
+            size_t pos2 = s.find(".sst", pos1);
+            if (pos2 == std::string::npos) {
+                return -1LL;
+            }
+            try {
+                return std::stoll(s.substr(pos1, pos2 - pos1));
+            }
+            catch (...) {
+                return -1LL;
+            }
+        };
+        // Sort by timestamp
+        return extract_ts(a.first) < extract_ts(b.first);
+    });
+
+    // Move SSTs into sst_files vector (youngest last)
+    for (auto& p : sst_vector) {
+        sst_files.push_back(std::move(p.second));
+    }
 }
 
 template<typename K, typename V>
