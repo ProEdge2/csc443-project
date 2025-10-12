@@ -59,3 +59,5 @@ obj/
 .idea/*
 test_database
 test_sst_flush
+test_sst
+test_buffer_pool
