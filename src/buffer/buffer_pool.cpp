@@ -7,7 +7,9 @@
 #include <cmath>
 #include <set>
 
-BufferPool::BufferPool(size_t initial_global_depth, size_t max_depth, size_t bucket_size, size_t max_page_limit)
+BufferPool::BufferPool(size_t initial_global_depth, size_t max_depth, size_t bucket_size, size_t max_page_limit,
+                       bool enable_eviction,
+                       std::function<void(const PageID&, const char*)> write_back_cb)
     : global_depth(initial_global_depth),
       initial_depth(initial_global_depth),
       max_global_depth(max_depth),
@@ -21,6 +23,9 @@ BufferPool::BufferPool(size_t initial_global_depth, size_t max_depth, size_t buc
     for (size_t i = 0; i < dir_size; i++) {
         directory[i] = std::make_shared<Bucket>(global_depth, pages_per_bucket);
     }
+
+    eviction_enabled = enable_eviction;
+    write_back = write_back_cb;
 }
 
 BufferPool::~BufferPool() {
@@ -154,11 +159,17 @@ bool BufferPool::put_page(const PageID& page_id, const char* page_data) {
     if (existing_page) {
         std::memcpy(existing_page->data, page_data, PAGE_SIZE);
         existing_page->is_valid = true;
+        existing_page->reference_bit = true;
         return true;
     }
 
     if (current_page_count >= max_pages) {
-        return false;
+        if (!eviction_enabled) {
+            return false;
+        }
+        if (!evict_one()) {
+            return false;
+        }
     }
 
     while (bucket->is_full()) {
@@ -172,7 +183,11 @@ bool BufferPool::put_page(const PageID& page_id, const char* page_data) {
     }
 
     auto new_page = std::make_unique<Page>(page_id, page_data);
+    new_page->reference_bit = false;
     bucket->pages.push_back(std::move(new_page));
+    // Track in clock ring
+    Page* raw = bucket->pages.back().get();
+    clock_ring.push_back(raw);
     current_page_count++;
     return true;
 }
@@ -188,6 +203,7 @@ bool BufferPool::get_page(const PageID& page_id, char* page_data) {
 
     Page* page = bucket->find_page(page_id);
     if (page && page->is_valid) {
+        page->reference_bit = true;
         std::memcpy(page_data, page->data, PAGE_SIZE);
         return true;
     }
@@ -208,6 +224,106 @@ bool BufferPool::remove_page(const PageID& page_id) {
     auto bucket = directory[bucket_index];
 
     if (bucket->remove_page(page_id)) {
+        remove_from_clock_ring(nullptr);
+        current_page_count--;
+        return true;
+    }
+
+    return false;
+}
+
+void BufferPool::enable_eviction_policy(bool enable) {
+    eviction_enabled = enable;
+}
+
+bool BufferPool::pin_page(const PageID& page_id) {
+    size_t hash_val = hash_page_id(page_id);
+    size_t bucket_index = get_bucket_index(hash_val);
+    auto bucket = directory[bucket_index];
+    Page* page = bucket->find_page(page_id);
+    if (!page) return false;
+    page->pin_count++;
+    return true;
+}
+
+bool BufferPool::unpin_page(const PageID& page_id) {
+    size_t hash_val = hash_page_id(page_id);
+    size_t bucket_index = get_bucket_index(hash_val);
+    auto bucket = directory[bucket_index];
+    Page* page = bucket->find_page(page_id);
+    if (!page) return false;
+    if (page->pin_count == 0) return false;
+    page->pin_count--;
+    return true;
+}
+
+bool BufferPool::mark_dirty(const PageID& page_id) {
+    size_t hash_val = hash_page_id(page_id);
+    size_t bucket_index = get_bucket_index(hash_val);
+    auto bucket = directory[bucket_index];
+    Page* page = bucket->find_page(page_id);
+    if (!page) return false;
+    page->dirty = true;
+    return true;
+}
+
+void BufferPool::remove_from_clock_ring(Page* page_ptr) {
+    for (size_t i = 0; i < clock_ring.size(); ++i) {
+        if (clock_ring[i] == page_ptr) {
+            clock_ring[i] = nullptr;
+            // Do not adjust clock_hand here; leave for evict_one to compact lazily
+            break;
+        }
+    }
+}
+
+bool BufferPool::evict_one() {
+    if (clock_ring.empty()) return false;
+
+    size_t scanned = 0;
+    size_t ring_size = clock_ring.size();
+    size_t max_scans = ring_size * 2; // allow one full pass to clear refs, second to evict
+
+    while (scanned < max_scans) {
+        if (clock_hand >= clock_ring.size()) {
+            clock_hand = 0;
+        }
+
+        Page* candidate = clock_ring[clock_hand];
+        if (candidate == nullptr || !candidate->is_valid) {
+            // remove null slots by erasing; keep hand at same index
+            clock_ring.erase(clock_ring.begin() + clock_hand);
+            ring_size = clock_ring.size();
+            continue;
+        }
+
+        if (candidate->pin_count > 0) {
+            clock_hand = (clock_hand + 1) % clock_ring.size();
+            scanned++;
+            continue;
+        }
+
+        if (candidate->reference_bit) {
+            candidate->reference_bit = false;
+            clock_hand = (clock_hand + 1) % clock_ring.size();
+            scanned++;
+            continue;
+        }
+
+        // Evict this candidate
+        if (candidate->dirty && write_back) {
+            write_back(candidate->page_id, candidate->data);
+            candidate->dirty = false;
+        }
+
+        // Remove from its bucket
+        size_t hash_val = hash_page_id(candidate->page_id);
+        size_t bucket_index = get_bucket_index(hash_val);
+        auto bucket = directory[bucket_index];
+        bucket->remove_page(candidate->page_id);
+
+        // Remove from ring
+        clock_ring.erase(clock_ring.begin() + clock_hand);
         current_page_count--;
         return true;
     }
@@ -248,6 +364,8 @@ void BufferPool::clear() {
 
     global_depth = initial_depth;
     current_page_count = 0;
+    clock_ring.clear();
+    clock_hand = 0;
 }
 
 void BufferPool::print_stats() const {

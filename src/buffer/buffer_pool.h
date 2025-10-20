@@ -28,6 +28,10 @@ struct Page {
     PageID page_id;
     char data[PAGE_SIZE];
     bool is_valid;
+    // Eviction metadata
+    bool reference_bit = false;
+    size_t pin_count = 0;
+    bool dirty = false;
 
     Page(const PageID& id) : page_id(id), is_valid(false) {
         std::memset(data, 0, PAGE_SIZE);
@@ -92,6 +96,12 @@ private:
     size_t current_page_count;
     size_t max_pages;
 
+    // Eviction state (global clock)
+    bool eviction_enabled = false;
+    std::function<void(const PageID&, const char*)> write_back;
+    std::vector<Page*> clock_ring; // holds raw pointers to pages for clock traversal
+    size_t clock_hand = 0;
+
     size_t hash_page_id(const PageID& page_id) const;
     size_t xxhash(const char* data, size_t length, uint64_t seed = 0) const;
 
@@ -101,14 +111,26 @@ private:
     void double_directory();
     bool can_expand() const;
 
+    // Eviction internals
+    bool evict_one();
+    void remove_from_clock_ring(Page* page_ptr);
+
 public:
-    BufferPool(size_t initial_global_depth, size_t max_depth, size_t bucket_size, size_t max_page_limit);
+    BufferPool(size_t initial_global_depth, size_t max_depth, size_t bucket_size, size_t max_page_limit,
+               bool enable_eviction = false,
+               std::function<void(const PageID&, const char*)> write_back_cb = nullptr);
     ~BufferPool();
 
     bool put_page(const PageID& page_id, const char* page_data);
     bool get_page(const PageID& page_id, char* page_data);
     bool contains_page(const PageID& page_id) const;
     bool remove_page(const PageID& page_id);
+
+    // Eviction controls/API
+    void enable_eviction_policy(bool enable);
+    bool pin_page(const PageID& page_id);
+    bool unpin_page(const PageID& page_id);
+    bool mark_dirty(const PageID& page_id);
 
     size_t get_directory_size() const;
     size_t get_global_depth() const;
