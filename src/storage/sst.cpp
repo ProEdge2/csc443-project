@@ -6,10 +6,11 @@
 #include <algorithm>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <cstring>
 
 template<typename K, typename V>
-SST<K, V>::SST(const std::string& file_path)
-    : filename(file_path), entry_count(0) {
+SST<K, V>::SST(const std::string& file_path, BufferPool* bp)
+    : filename(file_path), entry_count(0), buffer_pool(bp) {
 }
 
 template<typename K, typename V>
@@ -59,24 +60,46 @@ std::vector<std::pair<K, V>> SST<K, V>::scan(const K& start_key, const K& end_ke
         return results;
     }
 
-    std::ifstream file(filename, std::ios::binary);
-    if (!file.is_open()) {
-        return results;
-    }
-
     try {
         // Find the starting position using binary search
-        size_t start_pos = binary_search_start_position(file, start_key);
+        size_t start_pos = binary_search_start_position(start_key);
+        size_t entry_size = sizeof(K) + sizeof(V);
 
         // Read from start position until we find a key > end_key
-        file.seekg(start_pos * (sizeof(K) + sizeof(V)));
-
         for (size_t i = start_pos; i < entry_count; i++) {
+            size_t byte_offset = i * entry_size;
+            size_t page_num = byte_offset / PAGE_SIZE;
+            size_t offset_in_page = byte_offset % PAGE_SIZE;
+
+            char page_data[PAGE_SIZE];
+            PageID pid(filename, page_num);
+
+            // Check buffer pool first
+            bool page_loaded = false;
+            if (buffer_pool && buffer_pool->get_page(pid, page_data)) {
+                page_loaded = true;
+            } else {
+                // Miss - read from disk
+                if (!read_page_from_disk(page_num, page_data)) {
+                    break;
+                }
+                if (buffer_pool) {
+                    buffer_pool->put_page(pid, page_data);
+                }
+                page_loaded = true;
+            }
+
+            if (!page_loaded) {
+                break;
+            }
+
+            // Extract K, V from page data
             K key;
             V value;
 
-            file.read(reinterpret_cast<char*>(&key), sizeof(K));
-            file.read(reinterpret_cast<char*>(&value), sizeof(V));
+            
+            std::memcpy(&key, &page_data[offset_in_page], sizeof(K));
+            std::memcpy(&value, &page_data[offset_in_page + sizeof(K)], sizeof(V));
 
             if (key > end_key) {
                 break; // We've gone past the end of our range
@@ -87,10 +110,8 @@ std::vector<std::pair<K, V>> SST<K, V>::scan(const K& start_key, const K& end_ke
             }
         }
 
-        file.close();
     } catch (const std::exception& e) {
         std::cerr << "Error scanning SST file: " << e.what() << std::endl;
-        file.close();
     }
 
     return results;
@@ -98,23 +119,44 @@ std::vector<std::pair<K, V>> SST<K, V>::scan(const K& start_key, const K& end_ke
 
 template<typename K, typename V>
 bool SST<K, V>::binary_search_file(const K& target_key, V& value) const {
-    std::ifstream file(filename, std::ios::binary);
-    if (!file.is_open()) {
-        return false;
-    }
-
     size_t left = 0;
     size_t right = entry_count;
+    size_t entry_size = sizeof(K) + sizeof(V);
 
     while (left < right) {
         size_t mid = left + (right - left) / 2;
+        size_t byte_offset = mid * entry_size;
+        size_t page_num = byte_offset / PAGE_SIZE;
+        size_t offset_in_page = byte_offset % PAGE_SIZE;
 
+        char page_data[PAGE_SIZE];
+        PageID pid(filename, page_num);
+
+        // Check buffer pool first
+        bool page_loaded = false;
+        if (buffer_pool && buffer_pool->get_page(pid, page_data)) {
+            page_loaded = true;
+        } else {
+            // Miss - read from disk
+            if (!read_page_from_disk(page_num, page_data)) {
+                return false;
+            }
+            if (buffer_pool) {
+                buffer_pool->put_page(pid, page_data);
+            }
+            page_loaded = true;
+        }
+
+        if (!page_loaded) {
+            return false;
+        }
+
+        // Extract K, V from page data
         K key;
         V val;
 
-        file.seekg(mid * (sizeof(K) + sizeof(V)));
-        file.read(reinterpret_cast<char*>(&key), sizeof(K));
-        file.read(reinterpret_cast<char*>(&val), sizeof(V));
+        std::memcpy(&key, &page_data[offset_in_page], sizeof(K));
+        std::memcpy(&val, &page_data[offset_in_page + sizeof(K)], sizeof(V));
 
         if (key == target_key) {
             value = val;
@@ -130,18 +172,45 @@ bool SST<K, V>::binary_search_file(const K& target_key, V& value) const {
 }
 
 template<typename K, typename V>
-size_t SST<K, V>::binary_search_start_position(std::ifstream& file, const K& start_key) const {
+size_t SST<K, V>::binary_search_start_position(const K& start_key) const {
     size_t left = 0;
     size_t right = entry_count;
     size_t result = entry_count; // Default to end if not found
+    size_t entry_size = sizeof(K) + sizeof(V);
 
     while (left < right) {
         size_t mid = left + (right - left) / 2;
+        size_t byte_offset = mid * entry_size;
+        size_t page_num = byte_offset / PAGE_SIZE;
+        size_t offset_in_page = byte_offset % PAGE_SIZE;
 
-        // Read key at position mid
-        file.seekg(mid * (sizeof(K) + sizeof(V)));
+        char page_data[PAGE_SIZE];
+        PageID pid(filename, page_num);
+
+        // Check buffer pool first
+        bool page_loaded = false;
+        if (buffer_pool && buffer_pool->get_page(pid, page_data)) {
+            page_loaded = true;
+        } else {
+            // Miss - read from disk
+            if (!read_page_from_disk(page_num, page_data)) {
+                return result;
+            }
+            if (buffer_pool) {
+                buffer_pool->put_page(pid, page_data);
+            }
+            page_loaded = true;
+        }
+
+        if (!page_loaded) {
+            return result;
+        }
+
+        // Extract key from page data
         K key;
-        file.read(reinterpret_cast<char*>(&key), sizeof(K));
+
+        // Entry fits in single page (integers only - 8 bytes total)
+        std::memcpy(&key, &page_data[offset_in_page], sizeof(K));
 
         if (key >= start_key) {
             result = mid;
@@ -156,14 +225,15 @@ size_t SST<K, V>::binary_search_start_position(std::ifstream& file, const K& sta
 
 template<typename K, typename V>
 bool SST<K, V>::load_existing_sst(const std::string& file_path,
-                                 std::unique_ptr<SST<K, V>>& sst_ptr) {
+                                 std::unique_ptr<SST<K, V>>& sst_ptr,
+                                 BufferPool* buffer_pool) {
     std::ifstream file(file_path, std::ios::binary);
     if (!file.is_open()) {
         return false;
     }
 
     // Create a new SST object to populate entry_count, min_key, max_key
-    sst_ptr = std::make_unique<SST<K, V>>(file_path);
+    sst_ptr = std::make_unique<SST<K, V>>(file_path, buffer_pool);
 
     // Get file size
     file.seekg(0, std::ios::end);
@@ -218,5 +288,55 @@ template<typename K, typename V>
 bool SST<K, V>::is_valid() const {
     return entry_count > 0 && !filename.empty();
 }
+
+// Page I/O helper methods
+template<typename K, typename V>
+bool SST<K, V>::read_page_from_disk(size_t page_offset, char* page_data) const {
+    std::ifstream file(filename, std::ios::binary);
+    if (!file.is_open()) {
+        return false;
+    }
+
+    file.seekg(page_offset * PAGE_SIZE);
+    file.read(page_data, PAGE_SIZE);
+
+    // Handle partial reads at EOF gracefully
+    if (static_cast<size_t>(file.gcount()) < PAGE_SIZE) {
+        // Zero out the rest of the page
+        std::memset(page_data + file.gcount(), 0, PAGE_SIZE - static_cast<size_t>(file.gcount()));
+    }
+
+    file.close();
+    return true;
+}
+
+template<typename K, typename V>
+bool SST<K, V>::write_page_to_disk(size_t page_offset, const char* page_data) const {
+    std::fstream file(filename, std::ios::binary | std::ios::in | std::ios::out);
+    if (!file.is_open()) {
+        return false;
+    }
+
+    file.seekp(page_offset * PAGE_SIZE);
+    file.write(page_data, PAGE_SIZE);
+    file.close();
+    return true;
+}
+
+template<typename K, typename V>
+bool SST<K, V>::write_page_to_file(const std::string& filename,
+                                   size_t page_offset,
+                                   const char* page_data) {
+    std::fstream file(filename, std::ios::binary | std::ios::in | std::ios::out);
+    if (!file.is_open()) {
+        return false;
+    }
+
+    file.seekp(page_offset * PAGE_SIZE);
+    file.write(page_data, PAGE_SIZE);
+    file.close();
+    return true;
+}
+
 
 #endif

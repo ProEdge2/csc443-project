@@ -6,6 +6,7 @@
 #include <memory>
 #include <filesystem>
 #include "../memtable/memtable.h"
+#include "../buffer/buffer_pool.h"
 
 template<typename K, typename V>
 class SST;
@@ -18,6 +19,7 @@ private:
     size_t memtable_size;
     std::unique_ptr<RedBlackTree<K, V>> current_memtable;
     std::vector<std::unique_ptr<SST<K, V>>> sst_files;
+    std::unique_ptr<BufferPool> buffer_pool;
     bool is_open;
 
     // TODO: add auto flushing when memtable reaches capacity

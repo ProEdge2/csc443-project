@@ -14,6 +14,21 @@ Database<K, V>::Database(const std::string& name, size_t memtable_max_size)
     : db_name(name), memtable_size(memtable_max_size), is_open(false) {
     db_directory = "data/" + db_name;
     current_memtable = nullptr;
+
+    // Initialize buffer pool with write-back callback
+    auto write_back_cb = [](const PageID& pid, const char* data) {
+        // Write dirty page back to disk
+        SST<K,V>::write_page_to_file(pid.filename, pid.offset, data);
+    };
+
+    buffer_pool = std::make_unique<BufferPool>(
+        2,      // initial_depth
+        10,     // max_depth
+        4,      // pages_per_bucket
+        128,    // max_pages (512KB)
+        true,   // enable_eviction
+        write_back_cb
+    );
 }
 
 template<typename K, typename V>
@@ -177,7 +192,7 @@ void Database<K, V>::flush_memtable_to_sst() {
         }
 
         // Create SST file from memtable data
-        auto sst = std::make_unique<SST<K, V>>(sst_path);
+        auto sst = std::make_unique<SST<K, V>>(sst_path, buffer_pool.get());
         if (sst->create_from_memtable(sst_path, memtable_data)) {
             sst_files.push_back(std::move(sst));
             std::cout << "Successfully flushed memtable to SST: " << sst_filename << std::endl;
@@ -214,7 +229,7 @@ void Database<K, V>::load_existing_ssts() {
         }
 
         std::unique_ptr<SST<K, V>> sst;
-        if (SST<K, V>::load_existing_sst(filename, sst)) {
+        if (SST<K, V>::load_existing_sst(filename, sst, buffer_pool.get())) {
             sst_vector.push_back({filename, std::move(sst)});
         }
     }

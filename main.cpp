@@ -1,12 +1,11 @@
 #include "src/core/database.h"
 #include <iostream>
-#include <string>
 
 int main() {
-    std::cout << "Key-Value Database Demo" << std::endl;
-    std::cout << "=======================" << std::endl;
+    std::cout << "Key-Value Database Demo (Integer Only)" << std::endl;
+    std::cout << "=====================================" << std::endl;
 
-    Database<std::string, std::string> db("test_db", 5);
+    Database<int, int> db("test_db", 5);
 
     if (!db.open()) {
         std::cerr << "Failed to open database!" << std::endl;
@@ -15,69 +14,63 @@ int main() {
 
     std::cout << "\nInserting key-value pairs into database..." << std::endl;
 
-    db.put("name", "Alice");
-    db.put("age", "25");
-    db.put("city", "New York");
-    db.put("job", "Engineer");
-    db.put("hobby", "Reading");
+    db.put(1, 100);
+    db.put(2, 200);
+    db.put(3, 300);
+    db.put(4, 400);
+    db.put(5, 500);
 
     db.print_stats();
 
     std::cout << "\nRetrieving values:" << std::endl;
-    std::string value;
+    int value;
 
-    if (db.get("name", value)) {
-        std::cout << "name: " << value << std::endl;
+    if (db.get(1, value)) {
+        std::cout << "Key 1: " << value << std::endl;
     }
 
-    if (db.get("age", value)) {
-        std::cout << "age: " << value << std::endl;
+    if (db.get(2, value)) {
+        std::cout << "Key 2: " << value << std::endl;
     }
 
-    if (db.get("city", value)) {
-        std::cout << "city: " << value << std::endl;
+    if (db.get(3, value)) {
+        std::cout << "Key 3: " << value << std::endl;
     }
 
-    if (db.get("job", value)) {
-        std::cout << "job: " << value << std::endl;
+    if (db.get(4, value)) {
+        std::cout << "Key 4: " << value << std::endl;
     }
 
-    if (db.get("hobby", value)) {
-        std::cout << "hobby: " << value << std::endl;
+    if (db.get(5, value)) {
+        std::cout << "Key 5: " << value << std::endl;
     }
 
     std::cout << "\nInserting more data to trigger SST creation:" << std::endl;
-    db.put("country", "USA");
-    db.put("state", "California");
-    db.put("company", "TechCorp");
+    db.put(6, 600);
+    db.put(7, 700);
+    db.put(8, 800);
 
     db.print_stats();
 
     std::cout << "\nTesting retrieval after SST flush:" << std::endl;
-    if (db.get("name", value)) {
-        std::cout << "name: " << value << std::endl;
+    if (db.get(1, value)) {
+        std::cout << "Key 1: " << value << std::endl;
     }
 
-    if (db.get("country", value)) {
-        std::cout << "country: " << value << std::endl;
+    if (db.get(6, value)) {
+        std::cout << "Key 6: " << value << std::endl;
     }
 
-    std::cout << "\nDemo with integer database:" << std::endl;
-    Database<int, int> int_db("int_test_db", 10);
-
-    if (int_db.open()) {
-        for (int i = 1; i <= 7; i++) {
-            int_db.put(i, i * i);
+    std::cout << "\nTesting scan functionality:" << std::endl;
+    size_t result_size;
+    std::pair<int, int>* results = db.scan(3, 6, result_size);
+    if (results) {
+        std::cout << "Scan results (keys 3-6): ";
+        for (size_t i = 0; i < result_size; i++) {
+            std::cout << "(" << results[i].first << "," << results[i].second << ") ";
         }
-
-        int int_value;
-        std::cout << "Square of 5: ";
-        if (int_db.get(5, int_value)) {
-            std::cout << int_value << std::endl;
-        }
-
-        int_db.print_stats();
-        int_db.close();
+        std::cout << std::endl;
+        delete[] results;
     }
 
     if (!db.close()) {
