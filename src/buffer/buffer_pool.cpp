@@ -9,13 +9,15 @@
 
 BufferPool::BufferPool(size_t initial_global_depth, size_t max_depth, size_t bucket_size, size_t max_page_limit,
                        bool enable_eviction,
-                       std::function<void(const PageID&, const char*)> write_back_cb)
+                       std::function<void(const PageID&, const char*)> write_back_cb,
+                       size_t flood_threshold)
     : global_depth(initial_global_depth),
       initial_depth(initial_global_depth),
       max_global_depth(max_depth),
       pages_per_bucket(bucket_size),
       current_page_count(0),
-      max_pages(max_page_limit) {
+      max_pages(max_page_limit),
+      flooding_threshold_pages(flood_threshold) {
 
     size_t dir_size = 1 << global_depth;
     directory.resize(dir_size);
@@ -303,12 +305,21 @@ bool BufferPool::evict_one() {
             continue;
         }
 
-        if (candidate->reference_bit) {
+        // Priority-based eviction: prefer evicting scan-marked pages
+        // Priority order: pinned=skip → high priority (scan pages) with ref_bit=0 → normal priority with ref_bit=0 → high priority with ref_bit=1 → normal priority with ref_bit=1
+        bool is_scan_page = (candidate->eviction_priority > 0);
+        bool has_ref_bit = candidate->reference_bit;
+
+        // For normal priority pages, clear ref_bit and continue if it was set
+        if (!is_scan_page && has_ref_bit) {
             candidate->reference_bit = false;
             clock_hand = (clock_hand + 1) % clock_ring.size();
             scanned++;
             continue;
         }
+
+        // For scan pages, we can evict immediately regardless of ref_bit
+        // For normal pages, only evict if ref_bit is false (which we've already handled above)
 
         // Evict this candidate
         if (candidate->dirty && write_back) {
@@ -375,6 +386,7 @@ void BufferPool::print_stats() const {
     std::cout << "Current pages: " << current_page_count << std::endl;
     std::cout << "Max pages: " << max_pages << std::endl;
     std::cout << "Pages per bucket: " << pages_per_bucket << std::endl;
+    std::cout << "Flooding threshold: " << flooding_threshold_pages << std::endl;
 
     size_t unique_buckets = 0;
     std::set<Bucket*> seen;
@@ -388,6 +400,58 @@ void BufferPool::print_stats() const {
 
     std::cout << "Unique buckets: " << unique_buckets << std::endl;
     std::cout << "Load factor: " << static_cast<double>(current_page_count) / (unique_buckets * pages_per_bucket) << std::endl;
+}
+
+// Sequential flooding protection methods
+std::string BufferPool::begin_scan() {
+    std::string scan_id = "scan_" + std::to_string(scan_id_counter++);
+    active_scan_page_counts[scan_id] = 0;
+    active_scan_pages[scan_id] = std::unordered_set<PageID>();
+    return scan_id;
+}
+
+void BufferPool::access_page_for_scan(const std::string& scan_id, const PageID& page_id) {
+    auto scan_it = active_scan_page_counts.find(scan_id);
+    if (scan_it == active_scan_page_counts.end()) {
+        return; // Invalid scan_id
+    }
+
+    auto pages_it = active_scan_pages.find(scan_id);
+    if (pages_it == active_scan_pages.end()) {
+        return; // Invalid scan_id
+    }
+
+    // Only count each page once per scan
+    if (pages_it->second.find(page_id) == pages_it->second.end()) {
+        pages_it->second.insert(page_id);
+        scan_it->second++;
+    }
+}
+
+void BufferPool::end_scan(const std::string& scan_id) {
+    auto scan_it = active_scan_page_counts.find(scan_id);
+    auto pages_it = active_scan_pages.find(scan_id);
+
+    if (scan_it == active_scan_page_counts.end() || pages_it == active_scan_pages.end()) {
+        return; // Invalid scan_id
+    }
+
+    // If this was a "long" scan, mark all accessed pages with low eviction priority
+    if (scan_it->second > flooding_threshold_pages) {
+        for (const PageID& page_id : pages_it->second) {
+            size_t hash_val = hash_page_id(page_id);
+            size_t bucket_index = get_bucket_index(hash_val);
+            auto bucket = directory[bucket_index];
+            Page* page = bucket->find_page(page_id);
+            if (page) {
+                page->eviction_priority = 1; // Mark as scan-low-priority
+            }
+        }
+    }
+
+    // Clean up scan tracking
+    active_scan_page_counts.erase(scan_it);
+    active_scan_pages.erase(pages_it);
 }
 
 #endif

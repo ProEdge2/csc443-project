@@ -27,7 +27,8 @@ Database<K, V>::Database(const std::string& name, size_t memtable_max_size)
         4,      // pages_per_bucket
         128,    // max_pages (512KB)
         true,   // enable_eviction
-        write_back_cb
+        write_back_cb,
+        10      // flooding_threshold_pages (default)
     );
 }
 

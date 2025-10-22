@@ -60,6 +60,12 @@ std::vector<std::pair<K, V>> SST<K, V>::scan(const K& start_key, const K& end_ke
         return results;
     }
 
+    // Begin scan tracking for sequential flooding protection
+    std::string scan_id;
+    if (buffer_pool) {
+        scan_id = buffer_pool->begin_scan();
+    }
+
     try {
         // Find the starting position using binary search
         size_t start_pos = binary_search_start_position(start_key);
@@ -73,6 +79,11 @@ std::vector<std::pair<K, V>> SST<K, V>::scan(const K& start_key, const K& end_ke
 
             char page_data[PAGE_SIZE];
             PageID pid(filename, page_num);
+
+            // Track page access for scan
+            if (buffer_pool && !scan_id.empty()) {
+                buffer_pool->access_page_for_scan(scan_id, pid);
+            }
 
             // Check buffer pool first
             bool page_loaded = false;
@@ -97,7 +108,7 @@ std::vector<std::pair<K, V>> SST<K, V>::scan(const K& start_key, const K& end_ke
             K key;
             V value;
 
-            
+
             std::memcpy(&key, &page_data[offset_in_page], sizeof(K));
             std::memcpy(&value, &page_data[offset_in_page + sizeof(K)], sizeof(V));
 
@@ -112,6 +123,11 @@ std::vector<std::pair<K, V>> SST<K, V>::scan(const K& start_key, const K& end_ke
 
     } catch (const std::exception& e) {
         std::cerr << "Error scanning SST file: " << e.what() << std::endl;
+    }
+
+    // End scan tracking
+    if (buffer_pool && !scan_id.empty()) {
+        buffer_pool->end_scan(scan_id);
     }
 
     return results;

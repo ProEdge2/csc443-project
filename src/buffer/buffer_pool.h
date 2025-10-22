@@ -6,6 +6,8 @@
 #include <memory>
 #include <cstring>
 #include <functional>
+#include <unordered_map>
+#include <unordered_set>
 
 constexpr size_t PAGE_SIZE = 4096;
 
@@ -24,6 +26,17 @@ struct PageID {
     }
 };
 
+// Hash function for PageID to use in unordered containers
+namespace std {
+    template<>
+    struct hash<PageID> {
+        std::size_t operator()(const PageID& page_id) const {
+            std::hash<std::string> hasher;
+            return hasher(page_id.filename) ^ (page_id.offset << 1);
+        }
+    };
+}
+
 struct Page {
     PageID page_id;
     char data[PAGE_SIZE];
@@ -32,6 +45,7 @@ struct Page {
     bool reference_bit = false;
     size_t pin_count = 0;
     bool dirty = false;
+    int eviction_priority = 0; // 0=normal, 1=scan-low-priority
 
     Page(const PageID& id) : page_id(id), is_valid(false) {
         std::memset(data, 0, PAGE_SIZE);
@@ -95,12 +109,18 @@ private:
     size_t pages_per_bucket;
     size_t current_page_count;
     size_t max_pages;
+    size_t flooding_threshold_pages;
 
     // Eviction state (global clock)
     bool eviction_enabled = false;
     std::function<void(const PageID&, const char*)> write_back;
     std::vector<Page*> clock_ring; // holds raw pointers to pages for clock traversal
     size_t clock_hand = 0;
+
+    // Sequential flooding protection
+    std::unordered_map<std::string, size_t> active_scan_page_counts;
+    std::unordered_map<std::string, std::unordered_set<PageID>> active_scan_pages;
+    size_t scan_id_counter = 0;
 
     size_t hash_page_id(const PageID& page_id) const;
     size_t xxhash(const char* data, size_t length, uint64_t seed = 0) const;
@@ -118,7 +138,8 @@ private:
 public:
     BufferPool(size_t initial_global_depth, size_t max_depth, size_t bucket_size, size_t max_page_limit,
                bool enable_eviction = false,
-               std::function<void(const PageID&, const char*)> write_back_cb = nullptr);
+               std::function<void(const PageID&, const char*)> write_back_cb = nullptr,
+               size_t flood_threshold = 10);
     ~BufferPool();
 
     bool put_page(const PageID& page_id, const char* page_data);
@@ -131,6 +152,11 @@ public:
     bool pin_page(const PageID& page_id);
     bool unpin_page(const PageID& page_id);
     bool mark_dirty(const PageID& page_id);
+
+    // Sequential flooding protection API
+    std::string begin_scan();
+    void access_page_for_scan(const std::string& scan_id, const PageID& page_id);
+    void end_scan(const std::string& scan_id);
 
     size_t get_directory_size() const;
     size_t get_global_depth() const;
