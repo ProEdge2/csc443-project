@@ -19,11 +19,6 @@ SST<K, V>::~SST() {
 
 template<typename K, typename V>
 bool SST<K, V>::create_from_memtable(const std::string& file_path, const std::vector<std::pair<K, V>>& sorted_data) {
-    std::ofstream file(file_path, std::ios::binary);
-    if (!file.is_open()) {
-        return false;
-    }
-
     entry_count = sorted_data.size();
     if (entry_count == 0) {
         return true;
@@ -33,154 +28,346 @@ bool SST<K, V>::create_from_memtable(const std::string& file_path, const std::ve
     max_key = sorted_data[entry_count - 1].first;
     filename = file_path;
 
-    for (const auto& pair : sorted_data) {
-        file.write(reinterpret_cast<const char*>(&pair.first), sizeof(K));
-        file.write(reinterpret_cast<const char*>(&pair.second), sizeof(V));
+    size_t data_index = 0;
+    size_t current_offset = sizeof(SSTHeader);
+    leaf_start_offset = current_offset;
+    std::vector<size_t> leaf_node_offsets;
+    std::vector<K> leaf_separator_keys;
+
+    // Create the b-tree from bottom up
+    // leaf nodes
+    while (data_index < entry_count) {
+        auto leaf_node = std::make_unique<LeafNode<K, V>>();
+        leaf_node->is_leaf = true;
+        leaf_node->count = 0;
+
+        // Create leaf nodes with key-value pairs (each node stores a page worth of <K, V> pairs)
+        while (leaf_node->count < LeafNode<K,V>::PAIRS_COUNT && data_index < entry_count) {
+            leaf_node->pairs[leaf_node->count] = sorted_data[data_index];
+            leaf_node->count++;
+            data_index++;
+        }
+
+        // Store largest key of leaf node
+        leaf_separator_keys.push_back(leaf_node->pairs[leaf_node->count - 1].first);
+
+        // Write leaf node to file
+        if (!write_page_to_disk(current_offset, reinterpret_cast<char*>(leaf_node.get()))) {
+            return false;
+        }
+        leaf_node_offsets.push_back(current_offset);
+
+        current_offset += PAGE_SIZE;
     }
 
-    file.close();
+    // Create internal nodes
+    std::vector<size_t> current_level_nodes = leaf_node_offsets;
+    std::vector<K> current_level_keys = leaf_separator_keys;
+    size_t internal_node_offset = current_offset;
+
+    // iterate until we have one node left
+    while (current_level_nodes.size() > 1) {
+        std::vector<size_t> next_level_nodes;
+        std::vector<K> next_level_keys;
+
+        for (size_t i = 0; i < current_level_nodes.size(); ) {
+            auto internal_node = std::make_unique<InternalNode<K>>();
+            internal_node->is_leaf = false;
+            internal_node->count = 0;
+
+            // Iterate over (each node holds page size worth of leaf node pointers)
+            for (size_t j = 0; j < InternalNode<K>::MAX_KEYS && i < current_level_nodes.size(); j++) {
+                internal_node->keys[j] = current_level_keys[i];
+
+                internal_node->children[j] = current_level_nodes[i];
+                internal_node->count++;
+                i++;
+            }
+            // Store largest key of new internal node for next level
+            next_level_keys.push_back(internal_node->keys[internal_node->count - 1]);
+
+            // Write internal node to file
+            if (!write_page_to_disk(internal_node_offset, reinterpret_cast<char*>(internal_node.get()))) {
+                return false;
+            }
+            next_level_nodes.push_back(internal_node_offset);
+            internal_node_offset += PAGE_SIZE;
+        }
+        current_level_nodes = next_level_nodes;
+        current_level_keys = next_level_keys;
+    }
+
+    // root node (last remaining node)
+    root_page_offset = current_level_nodes.empty() ? 0 : current_level_nodes[0];
+
+    SSTHeader header;
+    header.root_page_offset = root_page_offset;
+    header.leaf_start_offset = leaf_start_offset;
+    header.entry_count = entry_count;
+
+    // Write header to file
+    if (!write_page_to_disk(0, reinterpret_cast<char*>(&header))) {
+        return false;
+    }
+
     return true;
 }
 
 
 template<typename K, typename V>
-bool SST<K, V>::get(const K& key, V& value) const {
+bool SST<K, V>::get(const K& key, V& value, SearchMode mode) const {
     if (entry_count == 0 || key < min_key || key > max_key) {
         return false;
     }
 
-    return binary_search_file(key, value);
+    if (mode == SearchMode::B_TREE_SEARCH) {
+        return b_tree_search(key, value);
+    }
+    else {
+        return binary_search_file(key, value);
+    }
 }
 
 template<typename K, typename V>
-std::vector<std::pair<K, V>> SST<K, V>::scan(const K& start_key, const K& end_key) const {
+std::vector<std::pair<K, V>> SST<K, V>::scan(const K& start_key, const K& end_key, SearchMode mode) const {
     std::vector<std::pair<K, V>> results;
 
     if (entry_count == 0 || start_key > max_key || end_key < min_key) {
         return results;
     }
 
-    // Begin scan tracking for sequential flooding protection
-    std::string scan_id;
-    if (buffer_pool) {
-        scan_id = buffer_pool->begin_scan();
+    SSTHeader header;
+    char header_data[PAGE_SIZE];
+    // load page (first check buffer pool, then check disk)
+    if (!get_page_from_source(0, header_data)) {
+        return results;
+    }
+    header = *reinterpret_cast<SSTHeader*>(header_data);
+
+    size_t pairs_per_leaf = LeafNode<K,V>::PAIRS_COUNT;
+    size_t num_leaf_nodes = (header.entry_count + pairs_per_leaf - 1) / pairs_per_leaf;
+    size_t current_leaf_offset = 0;
+
+    // Find starting leaf with B-Tree search
+    if (mode == SearchMode::B_TREE_SEARCH) {
+        // find the start key
+        // if the start key is smaller than any key, start from the first leaf node
+        current_leaf_offset = find_leaf_node(start_key);
+        if (current_leaf_offset == 0) {
+            current_leaf_offset = header.leaf_start_offset;
+        }
     }
 
-    try {
-        // Find the starting position using binary search
-        size_t start_pos = binary_search_start_position(start_key);
-        size_t entry_size = sizeof(K) + sizeof(V);
+    // Find starting leaf with binary search
+    else {
+        size_t left = 0;
+        size_t right = num_leaf_nodes;
+        size_t start_leaf_index = 0;
 
-        // Read from start position until we find a key > end_key
-        for (size_t i = start_pos; i < entry_count; i++) {
-            size_t byte_offset = i * entry_size;
-            size_t page_num = byte_offset / PAGE_SIZE;
-            size_t offset_in_page = byte_offset % PAGE_SIZE;
+        while (left < right) {
+            size_t mid = left + (right - left) / 2;
+            size_t page_offset = header.leaf_start_offset + (mid * PAGE_SIZE);
 
             char page_data[PAGE_SIZE];
-            PageID pid(filename, page_num);
-
-            // Track page access for scan
-            if (buffer_pool && !scan_id.empty()) {
-                buffer_pool->access_page_for_scan(scan_id, pid);
+            if (!get_page_from_source(page_offset, page_data)) {
+                return results;
             }
+            LeafNode<K, V>* leaf_node = reinterpret_cast<LeafNode<K, V>*>(page_data);
 
-            // Check buffer pool first
-            bool page_loaded = false;
-            if (buffer_pool && buffer_pool->get_page(pid, page_data)) {
-                page_loaded = true;
-            } else {
-                // Miss - read from disk
-                if (!read_page_from_disk(page_num, page_data)) {
-                    break;
+            if (leaf_node->pairs[leaf_node->count - 1].first < start_key) {
+                left = mid + 1;
+            }
+            else {
+                right = mid;
+            }
+        }
+        start_leaf_index = left;
+        current_leaf_offset = header.leaf_start_offset + (start_leaf_index * PAGE_SIZE);
+    }
+
+    // start scanning
+    size_t current_leaf_index = (current_leaf_offset - header.leaf_start_offset) / PAGE_SIZE;
+    bool first_leaf_processed = false;
+
+    // scan through leaves
+    while (current_leaf_index < num_leaf_nodes) {
+        char page_data[PAGE_SIZE];
+        if (!get_page_from_source(current_leaf_offset, page_data)) {
+            break;
+        }
+        LeafNode<K, V>* leaf_node = reinterpret_cast<LeafNode<K, V>*>(page_data);
+
+        size_t start_pos_in_leaf = 0;
+        // binary search to find starting position in leaf (only for first leaf)
+        if (!first_leaf_processed) {
+            size_t left = 0;
+            size_t right = leaf_node->count;
+            while (left < right) {
+                size_t mid = left + (right - left) / 2;
+                if (leaf_node->pairs[mid].first < start_key) {
+                    left = mid + 1;
+                } else {
+                    right = mid;
                 }
-                if (buffer_pool) {
-                    buffer_pool->put_page(pid, page_data);
-                }
-                page_loaded = true;
             }
-
-            if (!page_loaded) {
-                break;
+            start_pos_in_leaf = left;
+            first_leaf_processed = true;
+        }
+        for (size_t i = start_pos_in_leaf; i < leaf_node->count; i++) {
+            if (leaf_node->pairs[i].first <= end_key) {
+                results.push_back(leaf_node->pairs[i]);
             }
-
-            // Extract K, V from page data
-            K key;
-            V value;
-
-
-            std::memcpy(&key, &page_data[offset_in_page], sizeof(K));
-            std::memcpy(&value, &page_data[offset_in_page + sizeof(K)], sizeof(V));
-
-            if (key > end_key) {
-                break; // We've gone past the end of our range
-            }
-
-            if (key >= start_key) {
-                results.push_back(std::make_pair(key, value));
+            else {
+                // finished scan
+                return results;
             }
         }
 
-    } catch (const std::exception& e) {
-        std::cerr << "Error scanning SST file: " << e.what() << std::endl;
+        // move to next leaf
+        current_leaf_index++;
+        current_leaf_offset = header.leaf_start_offset + (current_leaf_index * PAGE_SIZE);
     }
-
-    // End scan tracking
-    if (buffer_pool && !scan_id.empty()) {
-        buffer_pool->end_scan(scan_id);
-    }
-
     return results;
 }
 
 template<typename K, typename V>
-bool SST<K, V>::binary_search_file(const K& target_key, V& value) const {
+bool SST<K, V>::b_tree_search(const K& key, V& value) const {
+    size_t leaf_node_offset = find_leaf_node(key);
+    if (leaf_node_offset == 0) {
+        return false;
+    }
+
+    char page_data[PAGE_SIZE];
+    if (!get_page_from_source(leaf_node_offset, page_data)) {
+        return false;
+    }
+    LeafNode<K, V>* leaf_node = reinterpret_cast<LeafNode<K, V>*>(page_data);
+
+    // binary search in leaf node
     size_t left = 0;
-    size_t right = entry_count;
-    size_t entry_size = sizeof(K) + sizeof(V);
+    size_t right = leaf_node->count;
+    while (left < right) {
+        size_t mid = left + (right - left) / 2;
+        if (leaf_node->pairs[mid].first < key) {
+            left = mid + 1;
+        }
+        else {
+            right = mid;
+        }
+    }
+
+    if (left < leaf_node->count && leaf_node->pairs[left].first == key) {
+        value = leaf_node->pairs[left].second;
+        return true;
+    }
+
+    // not found
+    return false;
+}
+
+template<typename K, typename V>
+size_t SST<K, V>::find_leaf_node(const K& key) const {
+    SSTHeader header;
+    char header_data[PAGE_SIZE];
+    if (!get_page_from_source(0, header_data)) {
+        return -1;
+    }
+    header = *reinterpret_cast<SSTHeader*>(header_data);
+
+    char page_data[PAGE_SIZE];
+    if (!get_page_from_source(root_page_offset, page_data)) {
+        return -1;
+    }
+    // root node
+    BTreeNode* current_node = reinterpret_cast<BTreeNode*>(page_data);
+
+    size_t current_offset = root_page_offset;
+
+    // while the current node is internal, binary search to find pointer to correct leaf within internal node
+    while (!current_node->is_leaf) {
+        InternalNode<K>* internal_node = reinterpret_cast<InternalNode<K>*>(current_node);
+
+        // binary search to find first value equal or greater than key
+        size_t left = 0;
+        size_t right = internal_node->count;
+        while (left < right) {
+            size_t mid = left + (right - left) / 2;
+            if (internal_node->keys[mid] < key) {
+                left = mid + 1;
+            } else {
+                right = mid;
+            }
+        }
+        size_t i = left;
+
+        current_offset = internal_node->children[i];
+        if (!get_page_from_source(current_offset, page_data)) {
+            return -1;
+        }
+        current_node = reinterpret_cast<BTreeNode*>(page_data);
+    }
+
+    return current_offset;
+}
+
+template<typename K, typename V>
+bool SST<K, V>::binary_search_file(const K& target_key, V& value) const {
+    SSTHeader header;
+    char header_data[PAGE_SIZE];
+    if (!get_page_from_source(0, header_data)) {
+        return false;
+    }
+    header = *reinterpret_cast<SSTHeader*>(header_data);
+
+    size_t pairs_per_leaf = LeafNode<K,V>::PAIRS_COUNT;
+    size_t num_leaf_nodes = (header.entry_count + pairs_per_leaf - 1) / pairs_per_leaf;
+
+    size_t left = 0;
+    size_t right = num_leaf_nodes;
 
     while (left < right) {
         size_t mid = left + (right - left) / 2;
-        size_t byte_offset = mid * entry_size;
-        size_t page_num = byte_offset / PAGE_SIZE;
-        size_t offset_in_page = byte_offset % PAGE_SIZE;
+        size_t page_offset = header.leaf_start_offset + (mid * PAGE_SIZE);
 
         char page_data[PAGE_SIZE];
-        PageID pid(filename, page_num);
-
-        // Check buffer pool first
-        bool page_loaded = false;
-        if (buffer_pool && buffer_pool->get_page(pid, page_data)) {
-            page_loaded = true;
-        } else {
-            // Miss - read from disk
-            if (!read_page_from_disk(page_num, page_data)) {
-                return false;
-            }
-            if (buffer_pool) {
-                buffer_pool->put_page(pid, page_data);
-            }
-            page_loaded = true;
-        }
-
-        if (!page_loaded) {
+        if (!get_page_from_source(page_offset, page_data)) {
             return false;
         }
+        LeafNode<K, V>* leaf_node = reinterpret_cast<LeafNode<K, V>*>(page_data);
 
-        // Extract K, V from page data
-        K key;
-        V val;
-
-        std::memcpy(&key, &page_data[offset_in_page], sizeof(K));
-        std::memcpy(&val, &page_data[offset_in_page + sizeof(K)], sizeof(V));
-
-        if (key == target_key) {
-            value = val;
-            return true;
-        } else if (key < target_key) {
+        // last key in leaf less than target
+        if (leaf_node->pairs[leaf_node->count - 1].first < target_key) {
             left = mid + 1;
-        } else {
+        }
+        else {
             right = mid;
+        }
+    }
+
+    if (left < num_leaf_nodes) {
+        size_t page_offset = header.leaf_start_offset + (left * PAGE_SIZE);
+        char page_data[PAGE_SIZE];
+        if (!get_page_from_source(page_offset, page_data)) {
+            return false;
+        }
+        LeafNode<K, V>* leaf_node = reinterpret_cast<LeafNode<K, V>*>(page_data);
+
+        // binary search within leaf node
+        size_t l = 0;
+        size_t r = leaf_node->count;
+        while (l < r) {
+            size_t m = l + (r - l) / 2;
+            if (leaf_node->pairs[m].first < target_key) {
+                l = m + 1;
+            }
+            else {
+                r = m;
+            }
+        }
+
+        if (l < leaf_node->count && leaf_node->pairs[l].first == target_key) {
+            value = leaf_node->pairs[l].second;
+            return true;
         }
     }
 
@@ -188,96 +375,66 @@ bool SST<K, V>::binary_search_file(const K& target_key, V& value) const {
 }
 
 template<typename K, typename V>
-size_t SST<K, V>::binary_search_start_position(const K& start_key) const {
-    size_t left = 0;
-    size_t right = entry_count;
-    size_t result = entry_count; // Default to end if not found
-    size_t entry_size = sizeof(K) + sizeof(V);
-
-    while (left < right) {
-        size_t mid = left + (right - left) / 2;
-        size_t byte_offset = mid * entry_size;
-        size_t page_num = byte_offset / PAGE_SIZE;
-        size_t offset_in_page = byte_offset % PAGE_SIZE;
-
-        char page_data[PAGE_SIZE];
-        PageID pid(filename, page_num);
-
-        // Check buffer pool first
-        bool page_loaded = false;
-        if (buffer_pool && buffer_pool->get_page(pid, page_data)) {
-            page_loaded = true;
-        } else {
-            // Miss - read from disk
-            if (!read_page_from_disk(page_num, page_data)) {
-                return result;
-            }
-            if (buffer_pool) {
-                buffer_pool->put_page(pid, page_data);
-            }
-            page_loaded = true;
-        }
-
-        if (!page_loaded) {
-            return result;
-        }
-
-        // Extract key from page data
-        K key;
-
-        // Entry fits in single page (integers only - 8 bytes total)
-        std::memcpy(&key, &page_data[offset_in_page], sizeof(K));
-
-        if (key >= start_key) {
-            result = mid;
-            right = mid;
-        } else {
-            left = mid + 1;
-        }
-    }
-
-    return result;
-}
-
-template<typename K, typename V>
 bool SST<K, V>::load_existing_sst(const std::string& file_path,
                                  std::unique_ptr<SST<K, V>>& sst_ptr,
-                                 BufferPool* buffer_pool) {
-    std::ifstream file(file_path, std::ios::binary);
-    if (!file.is_open()) {
+                                 BufferPool* bp) {
+    SSTHeader header;
+    char header_data[PAGE_SIZE];
+    SST<K, V> sst(file_path, bp);
+    if (!sst.get_page_from_source(0, header_data)) {
+        // failed to load header
         return false;
     }
+    header = *reinterpret_cast<SSTHeader*>(header_data);
 
-    // Create a new SST object to populate entry_count, min_key, max_key
-    sst_ptr = std::make_unique<SST<K, V>>(file_path, buffer_pool);
+    // Create a new SST object to populate header data
+    sst_ptr = std::make_unique<SST<K, V>>(file_path, bp);
+    sst_ptr->entry_count = header.entry_count;
+    sst_ptr->root_page_offset = header.root_page_offset;
+    sst_ptr->leaf_start_offset = header.leaf_start_offset;
 
-    // Get file size
-    file.seekg(0, std::ios::end);
-    std::streampos file_size = file.tellg();
-    file.seekg(0, std::ios::beg);
-
-    // Each entry is K + V bytes
-    size_t entry_count = static_cast<size_t>(file_size) / (sizeof(K) + sizeof(V));
-    sst_ptr->entry_count = entry_count;
-
-    if (entry_count == 0) {
-        file.close();
-        return true; // Empty
+    // populate min_key
+    if (header.entry_count > 0) {
+        char first_leaf_data[PAGE_SIZE];
+        if (sst.get_page_from_source(header.leaf_start_offset, first_leaf_data)) {
+            LeafNode<K, V>* first_leaf = reinterpret_cast<LeafNode<K, V>*>(first_leaf_data);
+            if (first_leaf->count > 0) {
+                sst_ptr->min_key = first_leaf->pairs[0].first;
+            }
+        }
     }
 
-    // Read first key
-    K first_key;
-    file.read(reinterpret_cast<char*>(&first_key), sizeof(K));
-    sst_ptr->min_key = first_key;
+    // populate last_key
+    size_t pairs_per_leaf = LeafNode<K,V>::PAIRS_COUNT;
+    size_t num_leaf_nodes = (header.entry_count + pairs_per_leaf - 1) / pairs_per_leaf;
+    size_t last_leaf_offset = header.leaf_start_offset + ((num_leaf_nodes - 1) * PAGE_SIZE);
 
-    // Read last key
-    file.seekg((entry_count - 1) * (sizeof(K) + sizeof(V)));
-    K last_key;
-    file.read(reinterpret_cast<char*>(&last_key), sizeof(K));
-    sst_ptr->max_key = last_key;
+    char last_leaf_data[PAGE_SIZE];
+    if (sst.get_page_from_source(last_leaf_offset, last_leaf_data)) {
+        LeafNode<K, V>* last_leaf = reinterpret_cast<LeafNode<K, V>*>(last_leaf_data);
+        if (last_leaf->count > 0) {
+            sst_ptr->max_key = last_leaf->pairs[last_leaf->count - 1].first;
+        }
+    }
 
-    file.close();
     return true;
+}
+
+// scans buffer pool for page, then scans disk
+template<typename K, typename V>
+bool SST<K, V>::get_page_from_source(size_t page_offset, char* page_data) const {
+    if (buffer_pool && buffer_pool->get_page({filename, page_offset}, page_data)) {
+        return true;
+    } else {
+        // Miss - read from disk
+        if (!read_page_from_disk(page_offset, page_data)) {
+            return false;
+        }
+        if (buffer_pool) {
+            buffer_pool->put_page({filename, page_offset}, page_data);
+        }
+        return true;
+    }
 }
 
 template<typename K, typename V>
@@ -313,7 +470,7 @@ bool SST<K, V>::read_page_from_disk(size_t page_offset, char* page_data) const {
         return false;
     }
 
-    file.seekg(page_offset * PAGE_SIZE);
+    file.seekg(page_offset);
     file.read(page_data, PAGE_SIZE);
 
     // Handle partial reads at EOF gracefully
@@ -330,11 +487,27 @@ template<typename K, typename V>
 bool SST<K, V>::write_page_to_disk(size_t page_offset, const char* page_data) const {
     std::fstream file(filename, std::ios::binary | std::ios::in | std::ios::out);
     if (!file.is_open()) {
+        file.clear();
+        // Create file
+        file.open(filename, std::ios::binary | std::ios::out);
+        if (!file.is_open()) {
+            // Failed to create
+            return false;
+        }
+        file.close(); // Close and reopen in read/write mode
+        file.open(filename, std::ios::binary | std::ios::in | std::ios::out);
+        if (!file.is_open()) {
+            return false;
+        }
+    }
+
+    file.seekp(page_offset);
+    file.write(page_data, PAGE_SIZE);
+    if (file.fail()) {
+        file.close();
         return false;
     }
 
-    file.seekp(page_offset * PAGE_SIZE);
-    file.write(page_data, PAGE_SIZE);
     file.close();
     return true;
 }

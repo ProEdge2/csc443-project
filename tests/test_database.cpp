@@ -127,10 +127,10 @@ void test_database_scan_closed_database() {
     ASSERT_EQUAL(0, static_cast<int>(result_size));
 }
 
-void test_database_get_from_multiple_ssts() {
+void test_database_get_from_multiple_ssts_b_tree() {
     // Clear SSTs from previous run
-    std::filesystem::remove_all("data/test_get_from_multiple_ssts");
-    Database<int, int> db("test_get_from_multiple_ssts", 2);
+    std::filesystem::remove_all("data/test_database_get_from_multiple_ssts_b_tree");
+    Database<int, int> db("test_database_get_from_multiple_ssts_b_tree", 2);
     ASSERT_TRUE(db.open());
 
     // Create multiple SSTs
@@ -144,24 +144,55 @@ void test_database_get_from_multiple_ssts() {
     db.flush_memtable_to_sst();
 
     int value;
-    ASSERT_TRUE(db.get(1, value));
+    ASSERT_TRUE(db.get(1, value, SearchMode::B_TREE_SEARCH));
     ASSERT_EQUAL(100, value);
 
-    ASSERT_TRUE(db.get(3, value));
+    ASSERT_TRUE(db.get(3, value, SearchMode::B_TREE_SEARCH));
     ASSERT_EQUAL(300, value);
 
-    ASSERT_TRUE(db.get(5, value));
+    ASSERT_TRUE(db.get(5, value, SearchMode::B_TREE_SEARCH));
     ASSERT_EQUAL(500, value);
 
-    ASSERT_FALSE(db.get(10, value));
+    ASSERT_FALSE(db.get(10, value, SearchMode::B_TREE_SEARCH));
 
     ASSERT_TRUE(db.close());
 }
 
-void test_database_scan_across_memtable_and_sst() {
+void test_database_get_from_multiple_ssts_binary_search() {
     // Clear SSTs from previous run
-    std::filesystem::remove_all("data/test_scan_across_memtable_and_sst");
-    Database<int, int> db("test_scan_across_memtable_and_sst", 3);
+    std::filesystem::remove_all("data/test_database_get_from_multiple_ssts_binary_search");
+    Database<int, int> db("test_database_get_from_multiple_ssts_binary_search", 2);
+    ASSERT_TRUE(db.open());
+
+    // Create multiple SSTs
+    db.put(1, 100);
+    db.put(2, 200);
+    db.flush_memtable_to_sst();
+
+    db.put(3, 300);
+    db.put(4, 400);
+    db.put(5, 500);
+    db.flush_memtable_to_sst();
+
+    int value;
+    ASSERT_TRUE(db.get(1, value, SearchMode::BINARY_SEARCH));
+    ASSERT_EQUAL(100, value);
+
+    ASSERT_TRUE(db.get(3, value, SearchMode::BINARY_SEARCH));
+    ASSERT_EQUAL(300, value);
+
+    ASSERT_TRUE(db.get(5, value, SearchMode::BINARY_SEARCH));
+    ASSERT_EQUAL(500, value);
+
+    ASSERT_FALSE(db.get(10, value, SearchMode::BINARY_SEARCH));
+
+    ASSERT_TRUE(db.close());
+}
+
+void test_database_scan_across_memtable_and_sst_b_tree() {
+    // Clear SSTs from previous run
+    std::filesystem::remove_all("data/test_database_scan_across_memtable_and_sst_b_tree");
+    Database<int, int> db("test_database_scan_across_memtable_and_sst_b_tree", 3);
     ASSERT_TRUE(db.open());
 
     // Flush to SST
@@ -175,7 +206,40 @@ void test_database_scan_across_memtable_and_sst() {
     db.put(5, 500);
 
     size_t result_size = 0;
-    auto results = db.scan(2, 5, result_size);
+    auto results = db.scan(2, 5, result_size, SearchMode::B_TREE_SEARCH);
+
+    ASSERT_EQUAL(4, static_cast<int>(result_size));
+    ASSERT_EQUAL(2, results[0].first);
+    ASSERT_EQUAL(200, results[0].second);
+    ASSERT_EQUAL(3, results[1].first);
+    ASSERT_EQUAL(300, results[1].second);
+    ASSERT_EQUAL(4, results[2].first);
+    ASSERT_EQUAL(400, results[2].second);
+    ASSERT_EQUAL(5, results[3].first);
+    ASSERT_EQUAL(500, results[3].second);
+
+    delete[] results;
+    ASSERT_TRUE(db.close());
+}
+
+void test_database_scan_across_memtable_and_sst_binary_search() {
+    // Clear SSTs from previous run
+    std::filesystem::remove_all("data/test_database_scan_across_memtable_and_sst_binary_search");
+    Database<int, int> db("test_database_scan_across_memtable_and_sst_binary_search", 3);
+    ASSERT_TRUE(db.open());
+
+    // Flush to SST
+    db.put(1, 100);
+    db.put(2, 200);
+    db.put(3, 300);
+    db.flush_memtable_to_sst();
+
+    // Add to memtable
+    db.put(4, 400);
+    db.put(5, 500);
+
+    size_t result_size = 0;
+    auto results = db.scan(2, 5, result_size, SearchMode::BINARY_SEARCH);
 
     ASSERT_EQUAL(4, static_cast<int>(result_size));
     ASSERT_EQUAL(2, results[0].first);
@@ -391,7 +455,7 @@ void test_scan_exactly_one_key() {
     ASSERT_TRUE(db.close());
 }
 
-void test_scan_spanning_multiple_ssts() {
+void test_scan_spanning_multiple_ssts_b_tree() {
     // Clear SSTs from previous run
     std::filesystem::remove_all("data/test_scan_spanning_multiple_ssts");
     Database<int, int> db("test_scan_spanning_multiple_ssts", 2); // small memtable size
@@ -411,7 +475,39 @@ void test_scan_spanning_multiple_ssts() {
     db.flush_memtable_to_sst();
 
     size_t result_size = 0;
-    auto results = db.scan(2, 7, result_size);
+    auto results = db.scan(2, 7, result_size, SearchMode::B_TREE_SEARCH);
+
+    ASSERT_EQUAL(6, static_cast<int>(result_size));
+    ASSERT_EQUAL(2, results[0].first);
+    ASSERT_EQUAL(200, results[0].second);
+    ASSERT_EQUAL(7, results[5].first);
+    ASSERT_EQUAL(700, results[5].second);
+
+    delete[] results;
+    ASSERT_TRUE(db.close());
+}
+
+void test_scan_spanning_multiple_ssts_binary_search() {
+    // Clear SSTs from previous run
+    std::filesystem::remove_all("data/test_scan_spanning_multiple_ssts_binary_search");
+    Database<int, int> db("test_scan_spanning_multiple_ssts_binary_search", 2); // small memtable size
+    ASSERT_TRUE(db.open());
+
+    db.put(1, 100);
+    db.put(2, 200);
+    db.flush_memtable_to_sst();
+
+    db.put(3, 300);
+    db.put(4, 400);
+    db.flush_memtable_to_sst();
+
+    db.put(5, 500);
+    db.put(6, 600);
+    db.put(7, 700);
+    db.flush_memtable_to_sst();
+
+    size_t result_size = 0;
+    auto results = db.scan(2, 7, result_size, SearchMode::BINARY_SEARCH);
 
     ASSERT_EQUAL(6, static_cast<int>(result_size));
     ASSERT_EQUAL(2, results[0].first);
@@ -471,6 +567,29 @@ void test_sst_preserved_across_db() {
     ASSERT_TRUE(db2.close());
 }
 
+void test_sst_with_buffer_pool_caching() {
+    std::filesystem::remove_all("data/test_buffer_pool_caching");
+
+    Database<int, int> db("test_buffer_pool_caching", 100);
+    ASSERT_TRUE(db.open());
+
+    // Create an SST file
+    for (int i = 0; i < 50; i++) {
+        db.put(i, i * 10);
+    }
+    db.flush_memtable_to_sst();
+
+    // should read from disk
+    int value;
+    ASSERT_TRUE(db.get(25, value));
+    ASSERT_EQUAL(250, value);
+
+    // should read from buffer (same page)
+    ASSERT_TRUE(db.get(40, value));
+    ASSERT_EQUAL(400, value);
+
+    ASSERT_TRUE(db.close());
+}
 
 int main() {
     std::cout << "Running Database Tests" << std::endl;
@@ -483,8 +602,10 @@ int main() {
     RUN_TEST(test_database_scan_closed_database);
 
     // SST related tests
-    RUN_TEST(test_database_get_from_multiple_ssts);
-    RUN_TEST(test_database_scan_across_memtable_and_sst);
+    RUN_TEST(test_database_get_from_multiple_ssts_b_tree);
+    RUN_TEST(test_database_get_from_multiple_ssts_binary_search);
+    RUN_TEST(test_database_scan_across_memtable_and_sst_b_tree);
+    RUN_TEST(test_database_scan_across_memtable_and_sst_binary_search);
 
     RUN_TEST(test_database_get_youngest_to_oldest_search);
     RUN_TEST(test_database_get_youngest_to_oldest_search_across_multiple_ssts);
@@ -495,9 +616,12 @@ int main() {
     RUN_TEST(test_scan_ends_after_largest_key);
     RUN_TEST(test_scan_with_no_results);
     RUN_TEST(test_scan_exactly_one_key);
-    RUN_TEST(test_scan_spanning_multiple_ssts);
+    RUN_TEST(test_scan_spanning_multiple_ssts_b_tree);
+    RUN_TEST(test_scan_spanning_multiple_ssts_binary_search);
 
     RUN_TEST(test_sst_preserved_across_db);
+
+    RUN_TEST(test_sst_with_buffer_pool_caching);
 
     TestFramework::print_results();
 

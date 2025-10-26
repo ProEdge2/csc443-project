@@ -105,7 +105,7 @@ bool Database<K, V>::put(const K& key, const V& value) {
 }
 
 template<typename K, typename V>
-bool Database<K, V>::get(const K& key, V& value) {
+bool Database<K, V>::get(const K& key, V& value, SearchMode mode) {
     if (!is_open || !current_memtable) {
         return false;
     }
@@ -120,7 +120,7 @@ bool Database<K, V>::get(const K& key, V& value) {
         const auto& sst_ptr = *it;
         if (key < sst_ptr->get_min_key() || key > sst_ptr->get_max_key())
             continue;
-        if (sst_ptr->get(key, value))
+        if (sst_ptr->get(key, value, mode))
             return true;
     }
 
@@ -128,7 +128,7 @@ bool Database<K, V>::get(const K& key, V& value) {
 }
 
 template<typename K, typename V>
-std::pair<K, V>* Database<K, V>::scan(const K& start_key, const K& end_key, size_t& result_size) {
+std::pair<K, V>* Database<K, V>::scan(const K& start_key, const K& end_key, size_t& result_size, SearchMode mode) {
     result_size = 0;
 
     if (!is_open) {
@@ -143,7 +143,7 @@ std::pair<K, V>* Database<K, V>::scan(const K& start_key, const K& end_key, size
         if (end_key < sst->get_min_key() || start_key > sst->get_max_key()) {
             continue;
         }
-        auto sst_results = sst->scan(start_key, end_key);
+        auto sst_results = sst->scan(start_key, end_key, mode);
         for (const auto& pair : sst_results) {
             if (result_map.find(pair.first) == result_map.end()) {
                 result_map[pair.first] = pair.second;

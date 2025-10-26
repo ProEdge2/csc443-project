@@ -7,9 +7,7 @@
 #include <filesystem>
 #include "../memtable/memtable.h"
 #include "../buffer/buffer_pool.h"
-
-template<typename K, typename V>
-class SST;
+#include "../storage/sst.h"
 
 template<typename K, typename V>
 class Database {
@@ -36,9 +34,10 @@ public:
 
     bool put(const K& key, const V& value);
 
-    bool get(const K& key, V& value);
+    bool get(const K& key, V& value, SearchMode mode = SearchMode::B_TREE_SEARCH);
 
-    std::pair<K, V>* scan(const K& start_key, const K& end_key, size_t& result_size);
+    std::pair<K, V>* scan(const K& start_key, const K& end_key, size_t& result_size,
+        SearchMode mode = SearchMode::B_TREE_SEARCH);
 
     bool is_database_open() const;
     size_t get_sst_count() const;
