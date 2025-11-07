@@ -18,8 +18,8 @@ struct SSTHeader {
     size_t root_page_offset;
     size_t leaf_start_offset;
     size_t entry_count;
-    // padding to make SSTHeader 1 page size
-    char padding[PAGE_SIZE - 3 * sizeof(size_t)];
+    size_t level;
+    char padding[PAGE_SIZE - 4 * sizeof(size_t)];
 };
 
 struct BTreeNode {
@@ -54,6 +54,7 @@ private:
     K min_key;
     K max_key;
     BufferPool* buffer_pool;
+    size_t level;
 
     size_t root_page_offset;
     size_t leaf_start_offset;
@@ -78,11 +79,18 @@ private:
 
 
 public:
-    SST(const std::string& file_path, BufferPool* bp = nullptr);
+    SST(const std::string& file_path, BufferPool* bp = nullptr, size_t sst_level = 0);
     ~SST();
 
     bool create_from_memtable(const std::string& file_path,
-                             const std::vector<std::pair<K, V>>& sorted_data);
+                             const std::vector<std::pair<K, V>>& sorted_data,
+                             size_t sst_level = 0);
+
+    static bool create_from_merge(const std::string& file_path,
+                                  SST<K, V>* sst1,
+                                  SST<K, V>* sst2,
+                                  size_t target_level,
+                                  std::unique_ptr<SST<K, V>>& result_sst);
 
     bool get(const K& key, V& value, SearchMode mode) const;
     std::vector<std::pair<K, V>> scan(const K& start_key, const K& end_key, SearchMode mode) const;
@@ -91,6 +99,7 @@ public:
     size_t get_entry_count() const;
     const K& get_min_key() const;
     const K& get_max_key() const;
+    size_t get_level() const;
 
     bool is_valid() const;
 

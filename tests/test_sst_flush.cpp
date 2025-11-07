@@ -57,7 +57,7 @@ void test_sst_creation_with_sorted_data() {
 
 void test_multiple_sst_files() {
     // Clear SSTs from previous run
-    std::filesystem::remove_all("data/test_multiple_sst");    
+    std::filesystem::remove_all("data/test_multiple_sst");
     Database<int, int> db("test_multiple_sst", 2); // Small memtable
 
     ASSERT_TRUE(db.open());
@@ -72,7 +72,7 @@ void test_multiple_sst_files() {
     ASSERT_TRUE(db.put(3, 3));
     ASSERT_TRUE(db.put(4, 4));
     db.flush_memtable_to_sst();
-    ASSERT_EQUAL(2, static_cast<int>(db.get_sst_count()));
+    ASSERT_EQUAL(1, static_cast<int>(db.get_sst_count()));
 
     ASSERT_TRUE(db.close());
 }
@@ -93,7 +93,7 @@ void test_flush_empty_memtable() {
 
 void test_database_close_flushes_memtable() {
     // Clear SSTs from previous run
-    std::filesystem::remove_all("data/test_close_flush");    
+    std::filesystem::remove_all("data/test_close_flush");
     Database<int, int> db("test_close_flush", 5);
 
     ASSERT_TRUE(db.open());

@@ -9,8 +9,8 @@
 #include <cstring>
 
 template<typename K, typename V>
-SST<K, V>::SST(const std::string& file_path, BufferPool* bp)
-    : filename(file_path), entry_count(0), buffer_pool(bp) {
+SST<K, V>::SST(const std::string& file_path, BufferPool* bp, size_t sst_level)
+    : filename(file_path), entry_count(0), buffer_pool(bp), level(sst_level) {
 }
 
 template<typename K, typename V>
@@ -18,7 +18,7 @@ SST<K, V>::~SST() {
 }
 
 template<typename K, typename V>
-bool SST<K, V>::create_from_memtable(const std::string& file_path, const std::vector<std::pair<K, V>>& sorted_data) {
+bool SST<K, V>::create_from_memtable(const std::string& file_path, const std::vector<std::pair<K, V>>& sorted_data, size_t sst_level) {
     entry_count = sorted_data.size();
     if (entry_count == 0) {
         return true;
@@ -27,6 +27,7 @@ bool SST<K, V>::create_from_memtable(const std::string& file_path, const std::ve
     min_key = sorted_data[0].first;
     max_key = sorted_data[entry_count - 1].first;
     filename = file_path;
+    level = sst_level;
 
     size_t data_index = 0;
     size_t current_offset = sizeof(SSTHeader);
@@ -104,6 +105,7 @@ bool SST<K, V>::create_from_memtable(const std::string& file_path, const std::ve
     header.root_page_offset = root_page_offset;
     header.leaf_start_offset = leaf_start_offset;
     header.entry_count = entry_count;
+    header.level = level;
 
     // Write header to file
     if (!write_page_to_disk(0, reinterpret_cast<char*>(&header))) {
@@ -111,6 +113,57 @@ bool SST<K, V>::create_from_memtable(const std::string& file_path, const std::ve
     }
 
     return true;
+}
+
+template<typename K, typename V>
+bool SST<K, V>::create_from_merge(const std::string& file_path,
+                                 SST<K, V>* sst1,
+                                  SST<K, V>* sst2,
+                                  size_t target_level,
+                                  std::unique_ptr<SST<K, V>>& result_sst) {
+    constexpr size_t BUFFER_SIZE = 1024;
+
+
+    std::vector<std::pair<K, V>> input_buffer1;
+    std::vector<std::pair<K, V>> input_buffer2;
+    std::vector<std::pair<K, V>> output_buffer;
+    output_buffer.reserve(BUFFER_SIZE * 2);
+
+    std::vector<std::pair<K, V>> all_merged_data;
+
+    K min_key1 = sst1->get_min_key();
+    K max_key1 = sst1->get_max_key();
+    K min_key2 = sst2->get_min_key();
+    K max_key2 = sst2->get_max_key();
+
+    auto data1 = sst1->scan(min_key1, max_key1, SearchMode::B_TREE_SEARCH);
+    auto data2 = sst2->scan(min_key2, max_key2, SearchMode::B_TREE_SEARCH);
+
+    size_t idx1 = 0, idx2 = 0;
+
+    while (idx1 < data1.size() || idx2 < data2.size()) {
+        if (idx1 >= data1.size()) {
+            all_merged_data.push_back(data2[idx2++]);
+        } else if (idx2 >= data2.size()) {
+            all_merged_data.push_back(data1[idx1++]);
+        } else {
+            if (data1[idx1].first < data2[idx2].first) {
+                all_merged_data.push_back(data1[idx1++]);
+
+            } else if (data1[idx1].first > data2[idx2].first) {
+                all_merged_data.push_back(data2[idx2++]);
+
+            } else {
+                all_merged_data.push_back(data2[idx2]);
+                idx1++;
+                idx2++;
+            }
+        }
+    }
+
+    result_sst = std::make_unique<SST<K, V>>(file_path, nullptr, target_level);
+
+    return result_sst->create_from_memtable(file_path, all_merged_data, target_level);
 }
 
 
@@ -392,6 +445,7 @@ bool SST<K, V>::load_existing_sst(const std::string& file_path,
     sst_ptr->entry_count = header.entry_count;
     sst_ptr->root_page_offset = header.root_page_offset;
     sst_ptr->leaf_start_offset = header.leaf_start_offset;
+    sst_ptr->level = header.level;
 
     // populate min_key
     if (header.entry_count > 0) {
@@ -455,6 +509,11 @@ const K& SST<K, V>::get_min_key() const {
 template<typename K, typename V>
 const K& SST<K, V>::get_max_key() const {
     return max_key;
+}
+
+template<typename K, typename V>
+size_t SST<K, V>::get_level() const {
+    return level;
 }
 
 template<typename K, typename V>

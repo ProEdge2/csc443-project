@@ -541,7 +541,8 @@ void test_sst_preserved_across_db() {
     ASSERT_TRUE(db2.open());
 
     // Check previous SSTs loaded
-    ASSERT_EQUAL(2, static_cast<int>(db2.get_sst_count()));
+    // after compaction, 2 SSTs at level 0 become 1 SST at level 1
+    ASSERT_EQUAL(1, static_cast<int>(db2.get_sst_count()));
 
     // Get
     int value;

@@ -64,3 +64,4 @@ test_buffer_pool
 test_buffer_pool_clock
 test_buffer_pool_integration
 test_sequential_flooding
+test_lsm_tree

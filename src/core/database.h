@@ -5,6 +5,7 @@
 #include <vector>
 #include <memory>
 #include <filesystem>
+#include <limits>
 #include "../memtable/memtable.h"
 #include "../buffer/buffer_pool.h"
 #include "../storage/sst.h"
@@ -16,14 +17,18 @@ private:
     std::string db_directory;
     size_t memtable_size;
     std::unique_ptr<RedBlackTree<K, V>> current_memtable;
-    std::vector<std::unique_ptr<SST<K, V>>> sst_files;
+    std::vector<std::vector<std::unique_ptr<SST<K, V>>>> levels;
     std::unique_ptr<BufferPool> buffer_pool;
     bool is_open;
 
-    // TODO: add auto flushing when memtable reaches capacity
+    static constexpr V TOMBSTONE = std::numeric_limits<V>::min();
+
     void load_existing_ssts();
-    std::string generate_sst_filename();
+    std::string generate_sst_filename(size_t level);
     void ensure_directory_exists();
+
+    void compact_level(size_t level);
+    void try_compaction();
 
 public:
     Database(const std::string& name, size_t memtable_max_size = 1000);
@@ -33,6 +38,7 @@ public:
     bool close();
 
     bool put(const K& key, const V& value);
+    bool remove(const K& key);
 
     bool get(const K& key, V& value, SearchMode mode = SearchMode::B_TREE_SEARCH);
 
