@@ -6,7 +6,7 @@
 #include <fstream>
 #include <utility>
 #include "../buffer/buffer_pool.h"
-#include "../../utils/bloom_filter.h"
+#include "../filter/bloom_filter.h"
 
 class BufferPool;
 

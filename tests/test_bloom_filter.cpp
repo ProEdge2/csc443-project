@@ -1,5 +1,5 @@
 #include "test_framework.h"
-#include "../utils/bloom_filter.h"
+#include "../src/filter/bloom_filter.h"
 #include <string>
 #include <vector>
 #include <numeric>

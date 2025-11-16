@@ -25,7 +25,7 @@ TEST_BUFFER_POOL_INTEGRATION_SOURCES = $(TESTDIR)/test_buffer_pool_integration.c
 TEST_SEQUENTIAL_FLOODING_SOURCES = $(TESTDIR)/test_sequential_flooding.cpp $(TESTDIR)/test_framework.cpp
 TEST_BLOOM_FILTER_SOURCES = $(TESTDIR)/test_bloom_filter.cpp $(TESTDIR)/test_framework.cpp
 
-HEADERS = $(SRCDIR)/memtable/memtable.h $(SRCDIR)/core/database.h $(SRCDIR)/storage/sst.h $(SRCDIR)/buffer/buffer_pool.h $(SRCDIR)/../utils/bloom_filter.h
+HEADERS = $(SRCDIR)/memtable/memtable.h $(SRCDIR)/core/database.h $(SRCDIR)/storage/sst.h $(SRCDIR)/buffer/buffer_pool.h $(SRCDIR)/filter/bloom_filter.h
 IMPL_FILES = $(SRCDIR)/memtable/memtable.cpp $(SRCDIR)/core/database.cpp $(SRCDIR)/storage/sst.cpp $(SRCDIR)/buffer/buffer_pool.cpp
 TEST_HEADERS = $(TESTDIR)/test_framework.h
 
