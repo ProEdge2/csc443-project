@@ -32,7 +32,7 @@ private:
     void try_compaction();
 
 public:
-    Database(const std::string& name, size_t memtable_max_size = 1000, double false_positive_rate = 0.01);
+    Database(const std::string& name, size_t memtable_max_size = 1000, double false_positive_rate = 0.01, size_t buffer_pool_max_pages = 128);
     ~Database();
 
     bool open();

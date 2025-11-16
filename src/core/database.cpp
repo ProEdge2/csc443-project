@@ -10,7 +10,7 @@
 #include <map>
 
 template<typename K, typename V>
-Database<K, V>::Database(const std::string& name, size_t memtable_max_size, double false_positive_rate)
+Database<K, V>::Database(const std::string& name, size_t memtable_max_size, double false_positive_rate, size_t buffer_pool_max_pages)
     : db_name(name), memtable_size(memtable_max_size), is_open(false), bloom_filter_fpr(false_positive_rate) {
     db_directory = "data/" + db_name;
     current_memtable = nullptr;
@@ -25,7 +25,7 @@ Database<K, V>::Database(const std::string& name, size_t memtable_max_size, doub
         2,      // initial_depth
         10,     // max_depth
         4,      // pages_per_bucket
-        128,    // max_pages (512KB)
+        buffer_pool_max_pages,  // max_pages (configurable)
         true,   // enable_eviction
         write_back_cb,
         10      // flooding_threshold_pages (default)
