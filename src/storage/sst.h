@@ -6,6 +6,7 @@
 #include <fstream>
 #include <utility>
 #include "../buffer/buffer_pool.h"
+#include "../../utils/bloom_filter.h"
 
 class BufferPool;
 
@@ -19,7 +20,12 @@ struct SSTHeader {
     size_t leaf_start_offset;
     size_t entry_count;
     size_t level;
-    char padding[PAGE_SIZE - 4 * sizeof(size_t)];
+    double false_positive_rate;
+    size_t bloom_filter_offset;
+    size_t bloom_filter_size;
+    size_t bloom_filter_num_hash_functions;
+    size_t bloom_filter_num_bits;
+    char padding[PAGE_SIZE - (8 * sizeof(size_t) + sizeof(double))];
 };
 
 struct BTreeNode {
@@ -55,9 +61,10 @@ private:
     K max_key;
     BufferPool* buffer_pool;
     size_t level;
-
     size_t root_page_offset;
     size_t leaf_start_offset;
+    std::unique_ptr<BloomFilter<K>> bloom_filter;
+    double bloom_filter_fpr;
 
     struct SSTEntry {
         K key;
@@ -73,13 +80,13 @@ private:
     size_t find_leaf_node(const K& key) const;
 
     // Page I/O helpers
-    bool read_page_from_disk(size_t page_offset, char* page_data) const;
-    bool write_page_to_disk(size_t page_offset, const char* page_data) const;
+    bool read_page_from_disk(size_t page_offset, char* page_data, size_t bytes_to_read = PAGE_SIZE) const;
+    bool write_page_to_disk(size_t page_offset, const char* page_data, size_t bytes_to_write = PAGE_SIZE) const;
     bool get_page_from_source(size_t page_offset, char* page_data) const;
 
 
 public:
-    SST(const std::string& file_path, BufferPool* bp = nullptr, size_t sst_level = 0);
+    SST(const std::string& file_path, BufferPool* bp = nullptr, size_t sst_level = 0, double false_positive_rate = 0.01);
     ~SST();
 
     bool create_from_memtable(const std::string& file_path,
@@ -106,6 +113,8 @@ public:
     static bool load_existing_sst(const std::string& file_path,
                                   std::unique_ptr<SST<K, V>>& sst_ptr,
                                   BufferPool* buffer_pool = nullptr);
+
+    bool bloom_filter_contains(const K& key) const;
 
     // Static helper for write-back callback
     static bool write_page_to_file(const std::string& filename,

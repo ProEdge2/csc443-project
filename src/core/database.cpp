@@ -10,8 +10,8 @@
 #include <map>
 
 template<typename K, typename V>
-Database<K, V>::Database(const std::string& name, size_t memtable_max_size)
-    : db_name(name), memtable_size(memtable_max_size), is_open(false) {
+Database<K, V>::Database(const std::string& name, size_t memtable_max_size, double false_positive_rate)
+    : db_name(name), memtable_size(memtable_max_size), is_open(false), bloom_filter_fpr(false_positive_rate) {
     db_directory = "data/" + db_name;
     current_memtable = nullptr;
 
@@ -128,13 +128,16 @@ bool Database<K, V>::get(const K& key, V& value, SearchMode mode) {
         // Search SSTs in reverse order within each level (youngest first)
         for (auto it = levels[level].rbegin(); it != levels[level].rend(); ++it) {
             const auto& sst_ptr = *it;
-            if (key < sst_ptr->get_min_key() || key > sst_ptr->get_max_key())
-                continue;
-            if (sst_ptr->get(key, value, mode)) {
-                if (value == TOMBSTONE) {
-                    return false;
+            // Check bloom filter, only check positives
+            if (sst_ptr->bloom_filter_contains(key)) {
+                if (key < sst_ptr->get_min_key() || key > sst_ptr->get_max_key())
+                    continue;
+                if (sst_ptr->get(key, value, mode)) {
+                    if (value == TOMBSTONE) {
+                        return false;
+                    }
+                    return true;
                 }
-                return true;
             }
         }
     }
@@ -220,7 +223,7 @@ void Database<K, V>::flush_memtable_to_sst() {
         }
 
         // create SST file from memtable data at level 0
-        auto sst = std::make_unique<SST<K, V>>(sst_path, buffer_pool.get(), 0);
+        auto sst = std::make_unique<SST<K, V>>(sst_path, buffer_pool.get(), 0, bloom_filter_fpr);
         if (sst->create_from_memtable(sst_path, memtable_data, 0)) {
             levels[0].push_back(std::move(sst));
             std::cout << "Successfully flushed memtable to SST: " << sst_filename << std::endl;

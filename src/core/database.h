@@ -20,6 +20,7 @@ private:
     std::vector<std::vector<std::unique_ptr<SST<K, V>>>> levels;
     std::unique_ptr<BufferPool> buffer_pool;
     bool is_open;
+    double bloom_filter_fpr;
 
     static constexpr V TOMBSTONE = std::numeric_limits<V>::min();
 
@@ -31,7 +32,7 @@ private:
     void try_compaction();
 
 public:
-    Database(const std::string& name, size_t memtable_max_size = 1000);
+    Database(const std::string& name, size_t memtable_max_size = 1000, double false_positive_rate = 0.01);
     ~Database();
 
     bool open();

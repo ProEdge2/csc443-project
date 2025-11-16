@@ -9,8 +9,9 @@
 #include <cstring>
 
 template<typename K, typename V>
-SST<K, V>::SST(const std::string& file_path, BufferPool* bp, size_t sst_level)
-    : filename(file_path), entry_count(0), buffer_pool(bp), level(sst_level) {
+SST<K, V>::SST(const std::string& file_path, BufferPool* bp, size_t sst_level, double false_positive_rate)
+    : filename(file_path), entry_count(0), buffer_pool(bp), level(sst_level), bloom_filter_fpr(false_positive_rate) {
+    bloom_filter = nullptr;
 }
 
 template<typename K, typename V>
@@ -27,7 +28,9 @@ bool SST<K, V>::create_from_memtable(const std::string& file_path, const std::ve
     min_key = sorted_data[0].first;
     max_key = sorted_data[entry_count - 1].first;
     filename = file_path;
-    level = sst_level;
+
+    // Initialize Bloom Filter
+    bloom_filter = std::make_unique<BloomFilter<K>>(entry_count, bloom_filter_fpr);
 
     size_t data_index = 0;
     size_t current_offset = sizeof(SSTHeader);
@@ -45,6 +48,8 @@ bool SST<K, V>::create_from_memtable(const std::string& file_path, const std::ve
         // Create leaf nodes with key-value pairs (each node stores a page worth of <K, V> pairs)
         while (leaf_node->count < LeafNode<K,V>::PAIRS_COUNT && data_index < entry_count) {
             leaf_node->pairs[leaf_node->count] = sorted_data[data_index];
+            // add leaf node keys to filter
+            bloom_filter->add(sorted_data[data_index].first);
             leaf_node->count++;
             data_index++;
         }
@@ -101,14 +106,50 @@ bool SST<K, V>::create_from_memtable(const std::string& file_path, const std::ve
     // root node (last remaining node)
     root_page_offset = current_level_nodes.empty() ? 0 : current_level_nodes[0];
 
+    // Bloom filter begins after all internal nodes
+    current_offset = internal_node_offset;
+    std::vector<char> bloom_filter_data;
+    size_t padded_bloom_filter_size = 0;
+    if (bloom_filter) {
+        // Calculate number of bytes needed for bit_array
+        size_t num_bits = bloom_filter->num_bits;
+        size_t num_bytes = (num_bits + 7) / 8;
+
+        // Round up to the nearest multiple of PAGE_SIZE
+        padded_bloom_filter_size = ((num_bytes + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE;
+        bloom_filter_data.resize(padded_bloom_filter_size);
+
+        // Manually serialize into bytes
+        for (size_t i = 0; i < num_bits; ++i) {
+            if (bloom_filter->bit_array[i]) {
+                bloom_filter_data[i / 8] |= (1 << (i % 8));
+            }
+        }
+    }
+
+    size_t bloom_filter_offset = current_offset;
+    size_t bloom_filter_size = padded_bloom_filter_size;
+
+    if (!bloom_filter_data.empty()) {
+        // Write bloom filter data to file
+        if (!write_page_to_disk(bloom_filter_offset, bloom_filter_data.data(), bloom_filter_size)) {
+            return false;
+        }
+    }
+
     SSTHeader header;
     header.root_page_offset = root_page_offset;
     header.leaf_start_offset = leaf_start_offset;
     header.entry_count = entry_count;
-    header.level = level;
+    header.level = sst_level;
+    header.false_positive_rate = bloom_filter_fpr;
+    header.bloom_filter_offset = bloom_filter_offset;
+    header.bloom_filter_size = bloom_filter_size; // Store the padded size
+    header.bloom_filter_num_hash_functions = bloom_filter->num_hash_functions;
+    header.bloom_filter_num_bits = bloom_filter->num_bits;
 
     // Write header to file
-    if (!write_page_to_disk(0, reinterpret_cast<char*>(&header))) {
+    if (!write_page_to_disk(0, reinterpret_cast<char*>(&header), sizeof(SSTHeader))) {
         return false;
     }
 
@@ -441,11 +482,25 @@ bool SST<K, V>::load_existing_sst(const std::string& file_path,
     header = *reinterpret_cast<SSTHeader*>(header_data);
 
     // Create a new SST object to populate header data
-    sst_ptr = std::make_unique<SST<K, V>>(file_path, bp);
+    sst_ptr = std::make_unique<SST<K, V>>(file_path, bp, header.level, header.false_positive_rate);
     sst_ptr->entry_count = header.entry_count;
     sst_ptr->root_page_offset = header.root_page_offset;
     sst_ptr->leaf_start_offset = header.leaf_start_offset;
-    sst_ptr->level = header.level;
+
+    // Load Bloom filter
+    if (header.bloom_filter_size > 0) {
+        std::vector<char> bloom_filter_data(header.bloom_filter_size);
+        if (!sst.read_page_from_disk(header.bloom_filter_offset, bloom_filter_data.data(), header.bloom_filter_size)) {
+            return false;
+        }
+
+        // Create new bloom filter object
+        sst_ptr->bloom_filter = std::make_unique<BloomFilter<K>>(
+            header.bloom_filter_num_bits,
+            header.bloom_filter_num_hash_functions,
+            bloom_filter_data
+        );
+    }
 
     // populate min_key
     if (header.entry_count > 0) {
@@ -517,25 +572,33 @@ size_t SST<K, V>::get_level() const {
 }
 
 template<typename K, typename V>
+bool SST<K, V>::bloom_filter_contains(const K& key) const {
+    if (bloom_filter) {
+        return bloom_filter->contains(key);
+    }
+    return false;
+}
+
+template<typename K, typename V>
 bool SST<K, V>::is_valid() const {
     return entry_count > 0 && !filename.empty();
 }
 
 // Page I/O helper methods
 template<typename K, typename V>
-bool SST<K, V>::read_page_from_disk(size_t page_offset, char* page_data) const {
+bool SST<K, V>::read_page_from_disk(size_t page_offset, char* page_data, size_t bytes_to_read) const {
     std::ifstream file(filename, std::ios::binary);
     if (!file.is_open()) {
         return false;
     }
 
     file.seekg(page_offset);
-    file.read(page_data, PAGE_SIZE);
+    file.read(page_data, bytes_to_read);
 
     // Handle partial reads at EOF gracefully
-    if (static_cast<size_t>(file.gcount()) < PAGE_SIZE) {
+    if (static_cast<size_t>(file.gcount()) < bytes_to_read) {
         // Zero out the rest of the page
-        std::memset(page_data + file.gcount(), 0, PAGE_SIZE - static_cast<size_t>(file.gcount()));
+        std::memset(page_data + file.gcount(), 0, bytes_to_read - static_cast<size_t>(file.gcount()));
     }
 
     file.close();
@@ -543,7 +606,7 @@ bool SST<K, V>::read_page_from_disk(size_t page_offset, char* page_data) const {
 }
 
 template<typename K, typename V>
-bool SST<K, V>::write_page_to_disk(size_t page_offset, const char* page_data) const {
+bool SST<K, V>::write_page_to_disk(size_t page_offset, const char* page_data, size_t bytes_to_write) const {
     std::fstream file(filename, std::ios::binary | std::ios::in | std::ios::out);
     if (!file.is_open()) {
         file.clear();
@@ -561,7 +624,7 @@ bool SST<K, V>::write_page_to_disk(size_t page_offset, const char* page_data) co
     }
 
     file.seekp(page_offset);
-    file.write(page_data, PAGE_SIZE);
+    file.write(page_data, bytes_to_write);
     if (file.fail()) {
         file.close();
         return false;
