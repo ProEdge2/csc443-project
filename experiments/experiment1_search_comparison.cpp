@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <vector>
 #include <algorithm>
+#include <iomanip>
 
 constexpr size_t BUFFER_POOL_SIZE_MB = 10;
 constexpr size_t BUFFER_POOL_PAGES = (BUFFER_POOL_SIZE_MB * 1024 * 1024) / 4096; // 2560 pages
@@ -27,6 +28,12 @@ size_t calculate_entry_count_for_size_mb(size_t size_mb) {
     // Each entry is a pair<int, int> = 8 bytes
     return (size_mb * 1024 * 1024) / sizeof(std::pair<int, int>);
 }
+
+struct Experiment1Result {
+    size_t data_size_mb;
+    double binary_throughput;
+    double btree_throughput;
+};
 
 void insert_random_data(Database<int, int>& db, size_t num_entries, RandomGenerator& rng) {
     std::cout << "Inserting " << num_entries << " entries..." << std::flush;
@@ -63,7 +70,8 @@ double measure_query_throughput(Database<int, int>& db, const std::vector<int>& 
     return calculate_throughput(num_queries, query_timer.elapsed_seconds());
 }
 
-void run_experiment_for_size(size_t data_size_mb, CSVWriter& csv_writer, RandomGenerator& rng) {
+void run_experiment_for_size(size_t data_size_mb, CSVWriter& csv_writer, RandomGenerator& rng,
+                             std::vector<Experiment1Result>& summary_rows) {
     std::cout << "\n=== Testing data size: " << data_size_mb << " MB ===" << std::endl;
 
     size_t num_entries = calculate_entry_count_for_size_mb(data_size_mb);
@@ -116,11 +124,33 @@ void run_experiment_for_size(size_t data_size_mb, CSVWriter& csv_writer, RandomG
                           std::to_string(binary_throughput),
                           std::to_string(btree_throughput)});
 
+    summary_rows.push_back({data_size_mb, binary_throughput, btree_throughput});
+
     // Close database
     db.close();
 
     // Clean up
     cleanup_database(db_name);
+}
+
+void print_summary_table(const std::vector<Experiment1Result>& rows) {
+    if (rows.empty()) {
+        return;
+    }
+
+    std::cout << "\nFinal throughput table (ops/sec):" << std::endl;
+    std::cout << std::left << std::setw(15) << "Data Size MB"
+              << std::right << std::setw(20) << "Binary Search"
+              << std::right << std::setw(20) << "B-Tree Search" << std::endl;
+    std::cout << std::string(55, '-') << std::endl;
+
+    std::cout << std::fixed << std::setprecision(0);
+    for (const auto& row : rows) {
+        std::cout << std::left << std::setw(15) << row.data_size_mb
+                  << std::right << std::setw(20) << row.binary_throughput
+                  << std::right << std::setw(20) << row.btree_throughput << std::endl;
+    }
+    std::cout.unsetf(std::ios::floatfield);
 }
 
 int main() {
@@ -142,13 +172,18 @@ int main() {
     // Initialize random generator with fixed seed for reproducibility
     RandomGenerator rng(42);
 
+    std::vector<Experiment1Result> summary_rows;
+    summary_rows.reserve(DATA_SIZES_MB.size());
+
     // Run experiment for each data size
     for (size_t data_size_mb : DATA_SIZES_MB) {
-        run_experiment_for_size(data_size_mb, csv_writer, rng);
+        run_experiment_for_size(data_size_mb, csv_writer, rng, summary_rows);
     }
 
     std::cout << "\n=== Experiment Complete ===" << std::endl;
     std::cout << "Results written to: experiments/results/experiment1_results.csv" << std::endl;
+
+    print_summary_table(summary_rows);
 
     return 0;
 }

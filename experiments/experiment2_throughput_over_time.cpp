@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <vector>
 #include <algorithm>
+#include <iomanip>
 
 constexpr size_t BUFFER_POOL_SIZE_MB = 10;
 constexpr size_t BUFFER_POOL_PAGES = (BUFFER_POOL_SIZE_MB * 1024 * 1024) / 4096;
@@ -15,6 +16,13 @@ constexpr size_t TOTAL_DATA_SIZE_MB = 1000; // 1 GB (1000MB for consistent 100MB
 constexpr size_t MEASUREMENT_INTERVAL_MB = 100; // Measure every 100 MB
 constexpr size_t QUERY_BATCH_SIZE = 10000; // Number of queries per measurement
 constexpr size_t SCAN_RANGE_SIZE = 1000; // Range size for scan queries
+
+struct Experiment2Result {
+    size_t data_size_mb;
+    double insert_throughput;
+    double get_throughput;
+    double scan_throughput;
+};
 
 size_t calculate_entry_count_for_size_mb(size_t size_mb) {
     // Each entry is a pair<int, int> = 8 bytes
@@ -72,7 +80,8 @@ double measure_scan_throughput(Database<int, int>& db, const std::vector<std::pa
 
 void measure_throughput_at_interval(Database<int, int>& db, size_t current_size_mb,
                                     RandomGenerator& rng, CSVWriter& csv_writer,
-                                    std::vector<int>& inserted_keys, double insert_throughput) {
+                                    std::vector<int>& inserted_keys, double insert_throughput,
+                                    std::vector<Experiment2Result>& summary_rows) {
     std::cout << "\n=== Measuring at " << current_size_mb << " MB ===" << std::endl;
 
     double get_tp = 0.0, scan_tp = 0.0;
@@ -118,6 +127,7 @@ void measure_throughput_at_interval(Database<int, int>& db, size_t current_size_
                           std::to_string(insert_tp),
                           std::to_string(get_tp),
                           std::to_string(scan_tp)});
+    summary_rows.push_back({current_size_mb, insert_tp, get_tp, scan_tp});
 }
 
 int main() {
@@ -156,6 +166,9 @@ int main() {
     std::vector<int> inserted_keys;
     inserted_keys.reserve(calculate_entry_count_for_size_mb(TOTAL_DATA_SIZE_MB));
 
+    std::vector<Experiment2Result> summary_rows;
+    summary_rows.reserve(TOTAL_DATA_SIZE_MB / MEASUREMENT_INTERVAL_MB + 2);
+
     // Insert data and measure at intervals
     size_t total_entries = calculate_entry_count_for_size_mb(TOTAL_DATA_SIZE_MB);
     size_t entries_per_interval = calculate_entry_count_for_size_mb(MEASUREMENT_INTERVAL_MB);
@@ -193,14 +206,16 @@ int main() {
         // Measure throughput at this interval
         size_t current_size_mb = (current_entries * sizeof(std::pair<int, int>)) / (1024 * 1024);
         if (current_size_mb >= next_measurement_mb || current_entries >= total_entries) {
-            measure_throughput_at_interval(db, current_size_mb, rng, csv_writer, inserted_keys, last_insert_throughput);
+            measure_throughput_at_interval(db, current_size_mb, rng, csv_writer, inserted_keys, last_insert_throughput, summary_rows);
             next_measurement_mb += MEASUREMENT_INTERVAL_MB;
         }
     }
 
     // Final measurement (use last measured insert throughput)
-    if (current_entries >= total_entries && last_insert_throughput > 0.0) {
-        measure_throughput_at_interval(db, TOTAL_DATA_SIZE_MB, rng, csv_writer, inserted_keys, last_insert_throughput);
+    bool already_recorded_final = !summary_rows.empty() &&
+                                  summary_rows.back().data_size_mb == TOTAL_DATA_SIZE_MB;
+    if (current_entries >= total_entries && last_insert_throughput > 0.0 && !already_recorded_final) {
+        measure_throughput_at_interval(db, TOTAL_DATA_SIZE_MB, rng, csv_writer, inserted_keys, last_insert_throughput, summary_rows);
     }
 
     // Close database
@@ -208,6 +223,24 @@ int main() {
 
     std::cout << "\n=== Experiment Complete ===" << std::endl;
     std::cout << "Results written to: experiments/results/experiment2_results.csv" << std::endl;
+
+    if (!summary_rows.empty()) {
+        std::cout << "\nFinal throughput table (ops/sec):" << std::endl;
+        std::cout << std::left << std::setw(12) << "Data MB"
+                  << std::right << std::setw(18) << "Insert"
+                  << std::right << std::setw(18) << "Get"
+                  << std::right << std::setw(18) << "Scan" << std::endl;
+        std::cout << std::string(66, '-') << std::endl;
+        std::cout << std::fixed << std::setprecision(0);
+        for (const auto& row : summary_rows) {
+            std::cout << std::left << std::setw(12) << row.data_size_mb
+                      << std::right << std::setw(18) << row.insert_throughput
+                      << std::right << std::setw(18) << row.get_throughput
+                      << std::right << std::setw(18) << row.scan_throughput << std::endl;
+        }
+        std::cout.unsetf(std::ios::floatfield);
+    }
+
     std::cout << "\nNote: Sequential flooding protection is enabled in the buffer pool." << std::endl;
 
     return 0;
